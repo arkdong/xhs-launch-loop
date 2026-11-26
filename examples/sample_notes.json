@@ -1,0 +1,424 @@
+{
+ "_说明": "虚构示例数据，仅用于演示脚本，不代表任何真实笔记或账号。",
+ "notes": [
+  {
+   "id": "demo00000000000000000000",
+   "title": "冷萃咖啡液推荐｜打工人必囤的5款",
+   "liked_count": 5200,
+   "collected_count": 3100,
+   "comment_count": 180,
+   "user": {
+    "nickname": "示例用户1",
+    "fans": 86000
+   },
+   "time": "2026-11-02",
+   "type": "normal",
+   "desc": "五款冷萃咖啡液横向推荐，口味和价格都列出来了",
+   "comments": [
+    "求链接",
+    "第三款多少钱",
+    "太苦了喝不惯"
+   ]
+  },
+  {
+   "id": "demo00000000000000000001",
+   "title": "咖啡液测评｜喝了30天的真实感受",
+   "liked_count": 2300,
+   "collected_count": 900,
+   "comment_count": 150,
+   "user": {
+    "nickname": "示例用户2",
+    "fans": 3200
+   },
+   "time": "2026-11-08",
+   "type": "normal",
+   "desc": "连续喝了一个月，记录口感、提神效果和价格",
+   "comments": [
+    "冷水能溶开吗",
+    "一杯算下来多少钱",
+    "有点贵"
+   ]
+  },
+  {
+   "id": "demo00000000000000000002",
+   "title": "咖啡液避雷！这3种千万别买",
+   "liked_count": 8800,
+   "collected_count": 2100,
+   "comment_count": 620,
+   "user": {
+    "nickname": "示例用户3",
+    "fans": 1900
+   },
+   "time": "2026-10-28",
+   "type": "normal",
+   "desc": "踩过的坑：太酸、结块、包装漏液",
+   "comments": [
+    "包装漏了客服不回",
+    "太苦了",
+    "求推荐不苦的",
+    "学生党喝哪个划算"
+   ]
+  },
+  {
+   "id": "demo00000000000000000003",
+   "title": "早八人续命咖啡，3秒搞定",
+   "liked_count": 1500,
+   "collected_count": 400,
+   "comment_count": 60,
+   "user": {
+    "nickname": "示例用户4",
+    "fans": 12000
+   },
+   "time": "2026-11-10",
+   "type": "video",
+   "desc": "办公室快速冲泡",
+   "comments": [
+    "怎么调才好喝",
+    "求教程"
+   ]
+  },
+  {
+   "id": "demo00000000000000000004",
+   "title": "咖啡液好物合集，闭眼入",
+   "liked_count": 900,
+   "collected_count": 500,
+   "comment_count": 20,
+   "user": {
+    "nickname": "示例用户5",
+    "fans": 45000
+   },
+   "time": "2026-10-15",
+   "type": "normal",
+   "desc": "十款好物",
+   "comments": [
+    "广告吧"
+   ]
+  },
+  {
+   "id": "demo00000000000000000005",
+   "title": "咖啡液推荐！学生党平价清单",
+   "liked_count": 1200,
+   "collected_count": 1500,
+   "comment_count": 90,
+   "user": {
+    "nickname": "示例用户6",
+    "fans": 2400
+   },
+   "time": "2026-11-05",
+   "type": "normal",
+   "desc": "按每杯价格排序的清单",
+   "comments": [
+    "多少钱一盒",
+    "有优惠吗",
+    "太贵了"
+   ]
+  },
+  {
+   "id": "demo00000000000000000006",
+   "title": "宿舍党也能喝的冷萃拿铁教程",
+   "liked_count": 3400,
+   "collected_count": 4200,
+   "comment_count": 210,
+   "user": {
+    "nickname": "示例用户7",
+    "fans": 800
+   },
+   "time": "2026-11-12",
+   "type": "video",
+   "desc": "不用咖啡机，冰牛奶加咖啡液三步做拿铁",
+   "comments": [
+    "太苦怎么办",
+    "想看燕麦奶版",
+    "怎么保存"
+   ]
+  },
+  {
+   "id": "demo00000000000000000007",
+   "title": "咖啡液推荐｜年度爱用",
+   "liked_count": 700,
+   "collected_count": 300,
+   "comment_count": 15,
+   "user": {
+    "nickname": "示例用户8",
+    "fans": 150000
+   },
+   "time": "2026-09-20",
+   "type": "normal",
+   "desc": "年度爱用盘点",
+   "comments": []
+  },
+  {
+   "id": "demo00000000000000000008",
+   "title": "5款咖啡液推荐，第3款绝了",
+   "liked_count": 600,
+   "collected_count": 280,
+   "comment_count": 12,
+   "user": {
+    "nickname": "示例用户9",
+    "fans": 30000
+   },
+   "time": "2026-10-01",
+   "type": "normal",
+   "desc": "合集推荐",
+   "comments": [
+    "求链接"
+   ]
+  },
+  {
+   "id": "demo00000000000000000009",
+   "title": "咖啡液 vs 挂耳 vs 速溶，怎么选？",
+   "liked_count": 2600,
+   "collected_count": 1900,
+   "comment_count": 240,
+   "user": {
+    "nickname": "示例用户10",
+    "fans": 5600
+   },
+   "time": "2026-11-01",
+   "type": "normal",
+   "desc": "三种形态对比价格、口感、方便程度",
+   "comments": [
+    "哪个便宜",
+    "出差带哪个方便"
+   ]
+  },
+  {
+   "id": "demo00000000000000000010",
+   "title": "以为是智商税，结果回购了3次",
+   "liked_count": 4100,
+   "collected_count": 1200,
+   "comment_count": 330,
+   "user": {
+    "nickname": "示例用户11",
+    "fans": 1500
+   },
+   "time": "2026-11-09",
+   "type": "normal",
+   "desc": "一开始觉得贵，算了每杯成本后真香",
+   "comments": [
+    "一杯多少钱",
+    "比便利店便宜吗",
+    "太贵了吧"
+   ]
+  },
+  {
+   "id": "demo00000000000000000011",
+   "title": "咖啡液推荐合集｜办公室必备",
+   "liked_count": 450,
+   "collected_count": 200,
+   "comment_count": 8,
+   "user": {
+    "nickname": "示例用户12",
+    "fans": 22000
+   },
+   "time": "2026-10-10",
+   "type": "normal",
+   "desc": "合集",
+   "comments": []
+  },
+  {
+   "id": "demo00000000000000000012",
+   "title": "咖啡液好物分享",
+   "liked_count": 120,
+   "collected_count": 40,
+   "comment_count": 3,
+   "user": {
+    "nickname": "示例用户13",
+    "fans": 900
+   },
+   "time": "2026-10-20",
+   "type": "normal",
+   "desc": "随手分享",
+   "comments": []
+  },
+  {
+   "id": "demo00000000000000000013",
+   "title": "新手第一次买咖啡液怎么选？",
+   "liked_count": 1900,
+   "collected_count": 2300,
+   "comment_count": 170,
+   "user": {
+    "nickname": "示例用户14",
+    "fans": 2100
+   },
+   "time": "2026-11-06",
+   "type": "normal",
+   "desc": "按口味偏好和预算给选购建议",
+   "comments": [
+    "不喝苦的选哪个",
+    "学生党预算20"
+   ]
+  },
+  {
+   "id": "demo00000000000000000014",
+   "title": "咖啡液推荐｜10款横评",
+   "liked_count": 1100,
+   "collected_count": 800,
+   "comment_count": 40,
+   "user": {
+    "nickname": "示例用户15",
+    "fans": 60000
+   },
+   "time": "2026-09-28",
+   "type": "normal",
+   "desc": "十款横评",
+   "comments": [
+    "求链接"
+   ]
+  },
+  {
+   "id": "demo00000000000000000015",
+   "title": "咖啡液的 6 种神仙喝法",
+   "liked_count": 2800,
+   "collected_count": 3900,
+   "comment_count": 95,
+   "user": {
+    "nickname": "示例用户16",
+    "fans": 7400
+   },
+   "time": "2026-10-30",
+   "type": "video",
+   "desc": "橙汁、椰子水、燕麦奶等喝法",
+   "comments": [
+    "太苦加什么",
+    "求更多喝法"
+   ]
+  },
+  {
+   "id": "demo00000000000000000016",
+   "title": "打工人的一周咖啡记录",
+   "liked_count": 380,
+   "collected_count": 90,
+   "comment_count": 25,
+   "user": {
+    "nickname": "示例用户17",
+    "fans": 650
+   },
+   "time": "2026-11-11",
+   "type": "normal",
+   "desc": "一周早餐咖啡记录",
+   "comments": []
+  },
+  {
+   "id": "demo00000000000000000017",
+   "title": "咖啡液踩坑｜漏液结块真的无语",
+   "liked_count": 1700,
+   "collected_count": 300,
+   "comment_count": 280,
+   "user": {
+    "nickname": "示例用户18",
+    "fans": 400
+   },
+   "time": "2026-11-03",
+   "type": "normal",
+   "desc": "收到就漏液，冷水结块",
+   "comments": [
+    "我的也漏了",
+    "包装太差",
+    "客服不回"
+   ]
+  },
+  {
+   "id": "demo00000000000000000018",
+   "title": "咖啡液推荐，好喝不贵",
+   "liked_count": 520,
+   "collected_count": 260,
+   "comment_count": 18,
+   "user": {
+    "nickname": "示例用户19",
+    "fans": 18000
+   },
+   "time": "2026-10-05",
+   "type": "normal",
+   "desc": "推荐",
+   "comments": [
+    "多少钱"
+   ]
+  },
+  {
+   "id": "demo00000000000000000019",
+   "title": "0糖0脂咖啡液是真的吗？看配料表",
+   "liked_count": 1600,
+   "collected_count": 1100,
+   "comment_count": 200,
+   "user": {
+    "nickname": "示例用户20",
+    "fans": 3100
+   },
+   "time": "2026-11-07",
+   "type": "normal",
+   "desc": "逐个看配料表和营养成分",
+   "comments": [
+    "0糖是真的吗",
+    "孕妇能喝吗"
+   ]
+  },
+  {
+   "id": "demo00000000000000000020",
+   "title": "咖啡液推荐清单｜夏日必备",
+   "liked_count": 300,
+   "collected_count": 150,
+   "comment_count": 6,
+   "user": {
+    "nickname": "示例用户21",
+    "fans": 9000
+   },
+   "time": "2026-08-30",
+   "type": "normal",
+   "desc": "清单",
+   "comments": []
+  },
+  {
+   "id": "demo00000000000000000021",
+   "title": "出差党的便携咖啡方案",
+   "liked_count": 950,
+   "collected_count": 700,
+   "comment_count": 70,
+   "user": {
+    "nickname": "示例用户22",
+    "fans": 2800
+   },
+   "time": "2026-10-25",
+   "type": "normal",
+   "desc": "小包装、不用冷藏的方案",
+   "comments": [
+    "希望出小包装",
+    "出差带着方便"
+   ]
+  },
+  {
+   "id": "demo00000000000000000022",
+   "title": "咖啡液合集推荐｜囤货",
+   "liked_count": 280,
+   "collected_count": 120,
+   "comment_count": 5,
+   "user": {
+    "nickname": "示例用户23",
+    "fans": 40000
+   },
+   "time": "2026-10-12",
+   "type": "normal",
+   "desc": "合集",
+   "comments": []
+  },
+  {
+   "id": "demo00000000000000000023",
+   "title": "为什么你冲的咖啡液总是很苦？",
+   "liked_count": 3900,
+   "collected_count": 2700,
+   "comment_count": 410,
+   "user": {
+    "nickname": "示例用户24",
+    "fans": 1200
+   },
+   "time": "2026-11-13",
+   "type": "video",
+   "desc": "水温、比例和奶的选择",
+   "comments": [
+    "原来是比例问题",
+    "太苦了终于有救",
+    "求比例表"
+   ]
+  }
+ ]
+}
