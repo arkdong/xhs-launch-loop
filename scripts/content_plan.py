@@ -3,16 +3,18 @@
 """发布方案：把调研结论变成「发什么、每一页放什么」，并生成配图提示词。
 
 用法（在你自己的工作目录运行，脚本用绝对路径）:
-  python3 content_plan.py new --id L1 [--template 模板] [--goal 触达|互动|收藏] [--style 风格] [--pages N] [--force]
+  python3 content_plan.py new --id L1 [--template 模板] [--goal 互动] [--style 风格] [--pages N] [--force]
       读发布日志和调研分析，生成待填写的方案：数据目录/plans/L1.json
   python3 content_plan.py show --id L1        以 Markdown 查看方案
-  python3 content_plan.py check --id L1       检查是否填完整、有没有占位内容、是否合规；通过后导出 plans/L1_draft.txt
+  python3 content_plan.py check --id L1       检查是否填完整、有没有占位内容、数字有没有出处、是否合规；
+                                              通过后导出 plans/L1_draft.txt（可直接粘贴的标题、正文、标签）和 plans/L1_package.md（整套发布内容）
   python3 content_plan.py prompts --id L1 [--with-text] [--out 文件]   生成每一页的配图提示词
   python3 content_plan.py templates           列出内容模板、发布目标和配图风格
 数据目录默认是当前目录下的 xhs_launch，可用 --dir 指定。只依赖 Python 3 标准库。
 脚本不编造产品信息：价格、时长、缺点等来自产品档案（launch_log.py init / fact），缺的会列出来。
 """
-import argparse, json, os, re, shutil, sys
+import argparse, os, re, shutil, sys
+from collections import OrderedDict
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -145,12 +147,28 @@ STYLES = {
     "对比拼图": "左右分屏对比构图，中间细分隔线，两侧光线和角度一致，差异一目了然",
 }
 NEGATIVE = "水印，logo，品牌商标，乱码文字，变形的手，多余的手指，畸形人脸，真实名人，低清晰度，过度磨皮，过度饱和，塑料质感"
-# 发布目标 → 常用模板和依据（依据见 references/content_rules.md 的样本分析，是官方账号的做法，只作参考）
+# 发布目标 → 常用模板和依据。依据来自技能自带的样本（references/content_rules.md：3 个官方账号的笔记），不是用户自己的调研数据，只作参考
+SAMPLE = "技能自带的官方账号样本"
 GOAL_TEMPLATES = {
-    "触达": (["情绪短片", "上线公告"], "样本里薯队长的短视频点赞中位数约为同账号图文的 12 倍；公告类标题直接说新闻"),
-    "互动": (["征集互动", "答疑科普"], "样本里请每个人在评论区发一样具体东西的笔记，评论数超过点赞数"),
-    "收藏": (["深度长文", "教程攻略", "对比平替"], "样本里规则说明和深度长文的收藏数接近或超过点赞数"),
+    "触达": (["情绪短片", "上线公告"], SAMPLE + "里，薯队长的短视频点赞中位数约为同账号图文的 12 倍；公告类标题直接说新闻"),
+    "互动": (["征集互动", "答疑科普"], SAMPLE + "里，请每个人在评论区发一样具体东西的笔记，评论数超过点赞数"),
+    "收藏": (["深度长文", "教程攻略", "对比平替"], SAMPLE + "里，规则说明和深度长文的收藏数接近或超过点赞数"),
 }
+# 模板要用户给得出这些东西才填得满。给不出就换模板或减页，不要拿别的事实凑数
+NEEDS = {
+    "测评实测": "3 个测评维度，每个都有用户给的实测结果",
+    "对比平替": "一个真实的对比对象，和 2 个带数字的差异",
+    "清单合集": "4 个条目，每个都有名称、理由、价格或数字",
+    "教程攻略": "3 个步骤，每步的动作和用量",
+    "避雷踩坑": "3 个真实踩过的坑",
+    "结果公布": "参与人数这类总数字，和 2 条可以公开的反馈",
+}
+NUMBER_TASK = re.compile(r"带(?:具体)?数字|实测数字|和数字|总数字")
+PRODUCT_WORDS = re.compile(r"产品|实拍|实物|主体|本品|包装")
+PLACE_END = re.compile(r".*(?:旁边|中间|前面|下面|角落|门口|上|里|旁|边)")
+BODY_PART = re.compile(r"(?:手|掌|指|耳朵?|脸|头|身|腿|脚|怀|嘴|唇|肩|腕|臂|脖子?|颈)[心背腕指尖]?[上里旁边]$")
+SCENE_HINT = re.compile(r"背景|环境|氛围|光|色调|窗|桌|台|柜|架|床|沙发|地板|墙|室|房|店|街|路|车|厢|户外|公园|厨房|工位|旁边|远处|角落|门口|上|里|外")
+WORDING = re.compile(r"字|写|标题|文案|结论|金句|问答|清单|步骤|表格|列出|标注")      # 画面描述里讲「图上写什么」的句子
 SERIES_PREFIX = re.compile(r"^\s*([Vv]ol\.?\s*\d|第\s*\d+\s*[期弹]|0?\d\s*[｜|])")
 EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿]")
 # 占位内容：没写完就留在方案里的字样。「期待补货」「等待确认」「XXL」这类正常说法不算。
@@ -189,6 +207,20 @@ def load_plan(a):
                  ("title_hooks_to_avoid", []), ("title_len_median", None), ("title_keywords", []), ("reference_notes", [])):
         fr.setdefault(k, v)
     return p
+
+
+def grams(text):
+    return set(seg[i:i + 2] for seg in re.findall(r"[一-鿿]+", str(text or "")) for i in range(len(seg) - 1))
+
+
+def answered_by(quotes, facts):
+    """读者在意的这一点，档案里是不是已经有答案：找和原话共同用词最多的一条事实。返回 (事实名, 内容) 或 None。"""
+    want, best = grams(" ".join(quotes)), None
+    for k, v in facts.items():
+        n = len(want & grams(v))
+        if n >= 2 and (best is None or n > best[0]):
+            best = (n, k, str(v).strip())
+    return best[1:] if best else None
 
 
 def save_plan(a, plan):
@@ -282,8 +314,9 @@ def cmd_new(a):
         sys.exit("「情绪短片」是视频模板，但 %s 登记的形式是图文。请用 --template 换一个模板，或者重新登记一篇视频：%s" % (launch["id"], C.cmd("launch_log.py", "add", "--type", "视频", "--title", '"标题"', "--hypothesis", '"假设"')))
     prev = latest_other_plan(a)
     roles = T[tname]["pages"]
-    if a.pages:
-        roles = roles[:max(1, a.pages - 1)]
+    if a.pages and a.pages - 1 < len(roles):       # 减页时留住最后一页（通常是「缺点与适合谁」或总结），从中间减
+        k = max(1, a.pages - 1)
+        roles = roles[:k - 1] + roles[-1:] if k >= 2 else roles[:1]
     unit = "镜头" if is_video else "页"
     pages = [{"no": 1, "role": "封面", "task": "一眼看懂这篇讲什么、和我有什么关系；大字不超过 %d 字" % COVER_MAX,
               "composition": "主体居中偏下，上方三分之一留白放标题", "text": "", "visual": "", "product_in_frame": True}]
@@ -301,10 +334,15 @@ def cmd_new(a):
     brief, gaps = research_brief(R)
     facts = [{"key": k, "question": q, "value": str(prod["facts"].get(k) or "").strip()} for k, q in ll.FACTS.items()]
     for g in gaps[:2]:      # 调研里用户最在意的点：需要用户给出真实的回答，脚本不替他回答
-        facts.append({"key": "回应「%s」" % g["aspect"], "question": "评论里有人说：%s。你的产品在这一点上的真实情况是什么？" % " / ".join("“%s”" % q for q in g.get("quotes", [])[:2]), "value": ""})
+        quotes = g.get("quotes", [])[:2]
+        hit = answered_by(quotes, prod["facts"])
+        facts.append({"key": "回应「%s」" % g["aspect"], "value": "",
+                      "question": "评论里有人说：%s。你的产品在这一点上的真实情况是什么？%s" % (
+                          " / ".join("“%s”" % q for q in quotes),
+                          "档案里的「%s」可能已经回答了（%s）：是的话直接抄过来，不用再问用户。" % hit if hit else "档案里已经有答案的，直接抄过来，不用再问用户。")})
     plan = {
         "id": launch["id"], "template": tname, "template_reason": why, "type": launch.get("type", "图文"), "unit": unit,
-        "product": prod["name"], "audience": prod.get("audience", ""), "tone": prod.get("tone", ""),
+        "product": prod["name"], "category": prod.get("category", ""), "audience": prod.get("audience", ""), "tone": prod.get("tone", ""),
         "angle": launch.get("angle", ""), "hypothesis": launch["hypothesis"], "baseline": bool(launch.get("baseline")), "evidence": launch.get("evidence", ""),
         "goal": goal, "main_metric": ll.GOALS.get(goal, ""),
         "from_research": brief,
@@ -312,19 +350,22 @@ def cmd_new(a):
         "titles": ["", "", ""],
         "pages": pages,
         "body": [{"section": sec, "guide": guide.replace("{unit}", unit), "text": ""} for sec, guide in BODY.get(tname, BODY_DEFAULT)],
-        "fixed_tags": (prev or {}).get("fixed_tags", []), "tags": [], "first_comment": "",
-        "image": {"style": a.style, "ratio": "9:16" if is_video else "3:4", "subject": "", "palette": "", "brand_tag": "", "real_photo_pages": []},
+        "fixed_tags": (prev or {}).get("fixed_tags", []) or [t for t in re.split(r"[\s,，、#]+", str(prod["facts"].get("固定标签") or "")) if t],
+        "tags": [], "first_comment": "",
+        "image": {"style": a.style, "ratio": "9:16" if is_video else "3:4", "subject": str(prod["facts"].get("外观") or "").strip(), "palette": "", "brand_tag": "", "real_photo_pages": []},
     }
     if prev:   # 同一账号的图要像一套：沿用上一份方案的产品描述、配色、角标
         for k in ("subject", "palette", "brand_tag"):
-            plan["image"][k] = prev.get("image", {}).get(k, "")
+            plan["image"][k] = prev.get("image", {}).get(k, "") or plan["image"][k]
         if not a.style_given:
             plan["image"]["style"] = prev.get("image", {}).get("style", a.style)
     save_plan(a, plan)
     print("已生成发布方案骨架：%s（共 %d %s）" % (C.where(path), len(pages), unit))
     print("模板「%s」：%s" % (tname, why))
+    if tname in NEEDS and not a.pages:
+        print("这个模板要用户给得出：%s。给不出这么多，现在就换：加 --force --pages N 减页（最后一页会保留），或者 --force --template 发布体。不要拿别的事实凑数。" % NEEDS[tname])
     if goal in GOAL_TEMPLATES:
-        print("发布目标「%s」→ 主指标：%s。%s。" % (goal, ll.GOALS[goal], GOAL_TEMPLATES[goal][1]))
+        print("发布目标「%s」→ 主指标：%s。%s（官方账号的做法，不是你的调研数据，只作参考）。" % (goal, ll.GOALS[goal], GOAL_TEMPLATES[goal][1]))
     else:
         print("还没定发布目标，方案会按目标定主指标。三选一（触达、互动、收藏）定下来：%s" % C.cmd("launch_log.py", "init", "--force", "--goal", "互动"))
     if prev:
@@ -332,18 +373,27 @@ def cmd_new(a):
     print()
     print(render(plan))
     miss = [f for f in facts if blank(f["value"])]
+    # 档案里没有、写这一篇又用得上的三样：和缺的事实放在同一轮问，免得检查没过再回头问一次
+    ask = [(k, what, field) for k, what, field, has in (("外观", "产品外观（颜色、形状、材质、包装）", "image.subject", plan["image"]["subject"]), ("语气", "想用的语气", "tone", plan["tone"]),
+                                                        ("固定标签", "每篇都带的固定标签", "fixed_tags", plan["fixed_tags"])) if not has]
+    also = "   %s顺带问：%s。用户答不上来就空着，不要猜；答了的填进方案文件的 %s，并记进档案：%s" % (
+        "同一轮里" if miss else "还有要问用户的事时", "、".join(x[1] for x in ask), "、".join(x[2] for x in ask), C.cmd("launch_log.py", "fact", *['%s="…"' % x[0] for x in ask])) if ask else ""
     print("\n下一步：")
     if miss:
         std = [f["key"] for f in miss if f["key"] in ll.FACTS]
-        print("1. 上面打了空格 [ ] 的 %d 项信息，一次问清用户（不要分几轮问），没有的填「无」。" % len(miss))
+        print("1. 上面打了空格 [ ] 的 %d 项信息，一次问清用户（不要分几轮问）。档案里已经有答案的直接抄；用户明确说没有的填「无」（缺点和身份不能填「无」）。" % len(miss))
         if std:
             print("   产品事实写进档案，以后每篇都能复用：%s" % C.cmd("launch_log.py", "fact", *['%s="…"' % k for k in std]))
         if len(std) < len(miss):
             print("   「回应…」是这一篇特有的，直接填在方案文件 facts_needed 对应项的 value 里。")
+        if also:
+            print(also)
         print("2. 填写方案文件里所有空字段（titles、pages 的 text 和 visual、body 的 text、tags、first_comment、image）。")
         print("3. 检查：%s" % C.cmd("content_plan.py", "check", "--id", plan["id"]))
     else:
         print("1. 产品事实已齐。填写方案文件里所有空字段（titles、pages 的 text 和 visual、body 的 text、tags、first_comment、image）。")
+        if also:
+            print(also)
         print("2. 检查：%s" % C.cmd("content_plan.py", "check", "--id", plan["id"]))
 
 
@@ -461,7 +511,7 @@ def sync_facts(a, p):
             if pv:
                 notes.append("「%s」方案里写的是「%s」，产品档案里是「%s」，已按档案为准。要改请运行：%s" % (k, pv, lv, C.cmd("launch_log.py", "fact", '%s="新的内容"' % k)))
             f["value"], plan_changed = lv, True
-        elif pv and not lv and not PLACEHOLDER.search(pv):
+        elif pv and not lv and not PLACEHOLDER.search(pv) and not (k in ll.NO_NONE and NONE_WORDS.match(pv)):
             facts[k], log_changed = pv, True
             notes.append("已把「%s」写回产品档案，下一篇不用再问。" % k)
     if log_changed:
@@ -471,12 +521,69 @@ def sync_facts(a, p):
     return notes
 
 
-def check_plan(p, extra_words=()):
+def number_sources(p, product):
+    """成稿里的数字可以引用的出处：档案的卖点和事实、这一篇的信息、调研里的原话。返回 [(出处, 文字)]。"""
+    product = product or {}
+    src = [("档案的卖点", x) for x in product.get("selling_points") or []]
+    src += [("档案的「%s」" % k, v) for k, v in (product.get("facts") or {}).items()]
+    src += [("本篇信息「%s」" % f["key"], f.get("value", "")) for f in p["facts_needed"]]
+    fr = p["from_research"]
+    src += [("调研里的用户原话", q) for q in fr.get("pain_quotes", [])] + [("调研里的问题", str(q).split("：", 1)[-1]) for q in fr.get("questions", [])]
+    src.append(("产品名", product.get("name") or p.get("product", "")))
+    return [(k, str(v)) for k, v in src if str(v or "").strip()]
+
+
+def written(p):
+    """读者会看到、听到的文字：[(位置, 文字)]。违规词和数字都要在这些位置查。"""
+    out = [("标题 %d" % (i + 1), t) for i, t in enumerate(p["titles"])]
+    for g in p["pages"]:
+        name = "第 %d %s" % (g["no"], p["unit"])
+        out.append((name + "的" + text_name(p), g.get("text", "")))
+        if p["type"] == "视频":
+            out.append((name + "的口播", g.get("voiceover", "")))
+    return out + [("正文「%s」" % b["section"], b["text"]) for b in p["body"]] + [("首评", p.get("first_comment", ""))]
+
+
+def check_numbers(p, product):
+    """成稿里的每个数字都要有出处。价格、规格、时长、比例这类硬数字，用户给的话里找不到就算错误；
+    次数、人数、件数这类软数字找不到，算警告。自己算出来的数（15 分钟 × 7 天 = 105 分钟）也要先让用户认可，登记成事实。"""
+    E, W = [], []
+    known = [(where, q) for where, text in number_sources(p, product) for q in C.quantities(text, loose=True)]
+    hard, soft = OrderedDict(), OrderedDict()
+    for where, text in written(p):
+        for q in C.quantities(text or ""):
+            if any(C.same_quantity(q, k) for _, k in known):
+                continue
+            if not q["hard"]:
+                soft.setdefault(q["raw"], []).append(where)
+                continue
+            same = OrderedDict()
+            for w, k in known:                                  # 同一个数只列第一个出处
+                if k["unit"] == q["unit"]:
+                    same.setdefault(k["value"], "「%s」（%s）" % (k["raw"], w))
+            hard.setdefault(q["raw"], {"where": [], "same": list(same.values())})["where"].append(where)
+    spots = lambda ws: "、".join(OrderedDict.fromkeys(ws))
+    for raw, x in list(hard.items())[:6]:
+        if x["same"]:
+            E.append("数字没有出处：%s写的是「%s」，用户给过的同类数字是%s。说的是同一件事，就照用户给的改；是另一件事，或者是你算出来的，先问用户再登记。" % (spots(x["where"]), raw, "、".join(x["same"][:3])))
+        else:
+            E.append("数字没有出处：%s里的「%s」，档案、本篇信息和调研原话里都没有。不是用户给的就删掉，或者换成不带数字的说法。" % (spots(x["where"]), raw))
+    if len(hard) > 6:
+        E.append("还有 %d 个数字没有出处，没有一一列出。" % (len(hard) - 6))
+    if soft:
+        W.append("这些说法档案里没有：%s。次数、人数、件数要是用户亲口给的，向用户确认；不是就删掉。" % "；".join("%s里的「%s」" % (spots(ws), raw) for raw, ws in list(soft.items())[:6]))
+    return E, W
+
+
+def check_plan(p, extra_words=(), product=None):
+    """product 是档案里的产品信息；给了才核对数字的出处。"""
     E, W = [], []
     fact = {f["key"]: str(f.get("value") or "").strip() for f in p["facts_needed"]}
     for f in p["facts_needed"]:
         if blank(f.get("value")):
-            E.append("信息缺失「%s」：%s 确实没有就填「无」。" % (f["key"], f["question"]))
+            E.append("信息缺失「%s」：%s %s" % (f["key"], f["question"], "这一项不能填「无」。" if f["key"] in ll.NO_NONE else "用户明确说没有就填「无」。"))
+        elif f["key"] in ll.NO_NONE and NONE_WORDS.match(str(f["value"])):
+            E.append("信息「%s」不能填「无」：%s。问用户要一个真实的回答。" % (f["key"], ll.NO_NONE[f["key"]]))
     titles = [t.strip() for t in p["titles"] if t.strip()]
     if len(titles) < 3:
         E.append("标题备选不足 3 个（现有 %d 个）。" % len(titles))
@@ -484,9 +591,9 @@ def check_plan(p, extra_words=()):
         if nc.xhs_len(t) > nc.TITLE_MAX:
             E.append("标题超过 %d 字：%s（%d 字）" % (nc.TITLE_MAX, t, nc.xhs_len(t)))
         if SERIES_PREFIX.search(t):
-            W.append("标题以期数或编号开头：%s。样本里一个账号的这类标题点赞中位数是其他标题的 0.57 倍（7 篇，仅作参考）。建议把新闻放在前面，期数放到封面角标。" % t)
+            W.append("标题以期数或编号开头：%s。%s里，一个账号的这类标题点赞中位数是其他标题的 0.57 倍（7 篇，仅作参考）。建议把新闻放在前面，期数放到封面角标。" % (t, SAMPLE))
         if EMOJI.search(t):
-            W.append("标题含表情符号：%s。样本的两个账号里，含表情的标题点赞中位数约为同账号其他标题的一半。建议把表情留给正文分点。" % t)
+            W.append("标题含表情符号：%s。%s里，有两个账号含表情的标题点赞中位数约为同账号其他标题的一半（仅作参考）。建议把表情留给正文分点。" % (t, SAMPLE))
     if len(set(titles)) < len(titles):
         W.append("标题备选有重复，三个标题应各用不同的写法。")
     if p.get("goal") == "互动" and p["body"] and p["body"][-1]["text"].strip() and "评论" not in p["body"][-1]["text"] + p.get("first_comment", ""):
@@ -509,6 +616,16 @@ def check_plan(p, extra_words=()):
             E.append("%s 没有画面描述，无法生成配图提示词。" % name)
         if p["type"] == "视频" and blank(g.get("voiceover")) and p["template"] != "情绪短片":
             E.append("%s 没有口播。没有人声的镜头写环境音或音乐，例如「（只有冲泡的水声）」。" % name)
+        if NUMBER_TASK.search(g.get("task", "")) and not blank(g.get("text")) and not re.search(r"\d|[一二两三四五六七八九十百半]", g["text"] + g.get("voiceover", "")):
+            W.append("%s 的任务是给出数字，但文字里没有数字。用户没有给这个数字的话，改掉这一%s的任务或删掉它，不要编一个。" % (name, p["unit"]))
+    same_text = OrderedDict()
+    for g in p["pages"]:
+        key = re.sub(r"[\W_]+", "", str(g.get("text") or ""))
+        if key:
+            same_text.setdefault(key, []).append(g["no"])
+    for nos_ in same_text.values():
+        if len(nos_) > 1:
+            W.append("第 %s %s的文字一模一样：每一%s要讲不同的东西。用户只给了一个事实的话，减页（new --force --pages N）或换模板。" % ("、".join(str(x) for x in nos_), p["unit"], p["unit"]))
     if p["type"] == "视频":
         secs = sum(secs_of(g) for g in p["pages"])
         untimed = [str(g["no"]) for g in p["pages"] if not secs_of(g)]
@@ -522,7 +639,7 @@ def check_plan(p, extra_words=()):
         if p["template"] == "情绪短片" and all(blank(g.get("voiceover")) for g in p["pages"]):
             E.append("情绪短片全片只说一句话，但每个镜头的口播都是空的。把这句话写进它出现的那个镜头。")
         if p["template"] == "情绪短片" and secs > 15:
-            W.append("情绪短片总时长 %g 秒，样本中表现最好的都在 6 到 15 秒。" % secs)
+            W.append("情绪短片总时长 %g 秒，%s里表现最好的都在 6 到 15 秒。" % (secs, SAMPLE))
         elif secs > 90:
             W.append("总时长 %g 秒，建议 30 到 60 秒。" % secs)
         if secs and not untimed and words / secs > SPEED_MAX:
@@ -576,6 +693,16 @@ def check_plan(p, extra_words=()):
             W.append("开头和标题都没有回应调研里的用户原话：%s。" % " / ".join(fr["pain_quotes"][:2]))
     for i in nc.check(compose_draft(p), extra_words, min_body=0 if p["template"] == "情绪短片" else 80)["issues"]:
         (E if i["level"] == "错误" else W).append("[成稿][%s] %s" % (i["item"], i["message"]))
+    # 标题 1、正文、标签上面已经查过；其余读者看得到、听得到的地方同样要查违规词
+    rules = nc.load_rules(extra_words)
+    for where, text in written(p):
+        if where == "标题 1" or where.startswith("正文"):
+            continue
+        for level, cat, msg in nc.scan(text, rules):
+            (E if level == "错误" else W).append("[%s][%s] %s" % (where, cat, msg))
+    if product is not None:
+        e, w = check_numbers(p, product)
+        E, W = E + e, W + w
     return E, W
 
 
@@ -585,28 +712,107 @@ def cmd_show(a):
     print(render(p))
 
 
+def page_source(p, g):
+    """这一页的图从哪来：实拍 / 卡片 / AI 生成。"""
+    if g["no"] in real_pages(p):
+        return "实拍"
+    return "卡片" if is_card(g) else "AI 生成"
+
+
+def compose_package(p):
+    """整套发布内容：三个标题、每一页的字和图的来源、正文、标签、首评。成稿 txt 只有能直接粘贴的那部分，这份是全的。"""
+    video = p["type"] == "视频"
+    L = ["# 发布包 %s：%s" % (p["id"], p["product"]), "", "发布时照这一份来。标题三选一，%s按顺序上传。" % ("镜头" if video else "图"), "",
+         "## 标题（三选一）", ""] + ["%d. %s" % (i + 1, t.strip()) for i, t in enumerate(p["titles"]) if t.strip()]
+    if video:
+        L += ["", "## 镜头（共 %d 个，约 %g 秒）" % (len(p["pages"]), sum(secs_of(g) for g in p["pages"])), "", "| 镜头 | 秒 | 字幕或贴纸 | 口播 | 画面 |", "|---|---|---|---|---|"]
+        for g in p["pages"]:
+            L.append("| %d %s | %g | %s | %s | %s |" % (g["no"], g["role"], secs_of(g), g["text"].strip(), (g.get("voiceover") or "").strip() or "（不说话）", g["visual"].strip()))
+    else:
+        L += ["", "## 图片（共 %d 页）" % len(p["pages"]), "", "| 页 | 图上文字 | 图从哪来 |", "|---|---|---|"]
+        for g in p["pages"]:
+            L.append("| %d %s | %s | %s |" % (g["no"], g["role"], g["text"].strip(), page_source(p, g)))
+        L.append("")
+        L.append("实拍的页直接用照片；卡片用排版工具做，或者用配图提示词生成底图再加字；AI 生成的页用配图提示词。")
+    body = "\n\n".join(b["text"].strip() for b in p["body"] if b["text"].strip())
+    L += ["", "## 正文和标签（直接粘贴）", "", body, "", " ".join("#" + t for t in all_tags(p)), "", "## 首评", "", (p.get("first_comment") or "").strip() or "（没有）", "", "## 发布时", ""]
+    if any(page_source(p, g) != "实拍" for g in p["pages"]) and not video:
+        L.append("- 用了 AI 生成的图，就在发布页勾选「内容含 AI 合成」。")
+    L.append("- 发出去以后登记链接和最终用的标题：%s" % C.cmd("launch_log.py", "publish", "--id", p["id"], "--url", '"笔记链接"', "--final-title", '"最终用的标题"'))
+    return "\n".join(L) + "\n"
+
+
+def product_of(a):
+    data = ll.load(a, must=False)
+    return (data or {}).get("product") or {}
+
+
 def cmd_check(a):
     p = load_plan(a)
     notes = sync_facts(a, p)
-    E, W = check_plan(p, [C.P(a, "banned_words.txt")])
+    E, W = check_plan(p, [C.P(a, "banned_words.txt")], product_of(a))
     path = os.path.join(plan_dir(a), "%s_draft.txt" % p["id"])
+    pack = os.path.join(plan_dir(a), "%s_package.md" % p["id"])
     if not E:
         C.write_text(path, compose_draft(p))
+        C.write_text(pack, compose_package(p))
     print("# 发布方案检查 %s\n\n结论：%s（错误 %d，警告 %d）\n" % (p["id"], "通过" if not E else "未通过，请补全后重新检查", len(E), len(W)))
     for x in notes:
         print("- [提示] " + x)
     for x in E:
         print("- [错误] " + x)
+    if any(x.startswith("数字没有出处") for x in E):          # 怎么补出处是做法，不是又一条错误：不算进错误数
+        print("- [提示] 用户给了新的事实时这样登记，登记后数字就有出处了：产品的事实记进档案，运行 `%s`；只和这一篇有关的，在方案文件的 facts_needed 里加一项（key 自己起，value 写用户的原话）。"
+              % C.cmd("launch_log.py", "fact", '事实名="用户的原话"'))
     for x in W:
         print("- [警告] " + x)
     fixed = [t for t in all_tags(p) if t in [str(x).lstrip("#").strip() for x in p.get("fixed_tags", [])]]
     if fixed:
         print("- [提示] 固定标签 %s 已自动加进成稿，不用在 tags 里重复写。" % " ".join("#" + t for t in fixed))
     if not E:
-        print("\n成稿已导出：%s\n下一步：%s" % (C.where(path), C.cmd("content_plan.py", "prompts", "--id", p["id"])))
+        print("\n检查过的范围：三个标题、每一%s的字%s、正文、首评、标签里的违规词和占位内容；这些地方的数字有没有出处。图片本身、你和产品的关系是否如实，脚本查不了。" % (p["unit"], "和口播" if p["type"] == "视频" else ""))
+        print("\n已导出两份：\n- 可直接粘贴的标题、正文、标签：%s\n- 整套发布内容（三个标题、每一%s的字、首评）：%s" % (C.where(path), p["unit"], C.where(pack)))
+        print("下一步：%s" % C.cmd("content_plan.py", "prompts", "--id", p["id"]))
     else:
         print("\n方案文件：%s" % C.where(plan_path(a)))
     sys.exit(1 if E else 0)
+
+
+def clauses(text):
+    return [x.strip() for x in re.split(r"[，,；;。]", str(text)) if x.strip()]
+
+
+def product_terms(p):
+    """画面描述里指产品的说法：产品名、品类，以及产品名末尾的两三个字（「白茶护手霜」→「护手霜」）。"""
+    name = str(p.get("product") or "").strip()
+    out = [name, str(p.get("category") or "").strip()]
+    tail = re.search(r"[一-鿿]{2,}$", name)
+    if tail:
+        out += [tail.group(0)[-3:], tail.group(0)[-2:]]
+    return [x.lower() for x in OrderedDict.fromkeys(out) if len(x) >= 2]
+
+
+def scene_only(visual, terms):
+    """画面描述里只留场景。说产品的那几句是给拍照的人看的，不能原样交给「不要画产品」的提示词：
+    「办公桌上一支白色护手霜」只留下「办公桌上」，剩不下地点的整句去掉；
+    描述里提到了产品时，别的句子也只留看得出是场景的（「旁边是键盘」留，「形成分层」说的是产品，不留）。"""
+    parts = clauses(visual)
+    spot = lambda x: [x.lower().find(t) for t in terms if t in x.lower()] + [m.start() for m in [PRODUCT_WORDS.search(x)] if m]
+    if not any(spot(x) for x in parts):
+        return parts
+    out = []
+    for x in parts:
+        hits = spot(x)
+        if not hits:
+            if SCENE_HINT.search(x):
+                out.append(x)
+            continue
+        place = PLACE_END.match(x[:min(hits)])
+        place = place.group(0) if place else ""
+        if len(place) >= 3 or (len(place) == 2 and place[0] not in "旁上下里边中前后左右"):
+            if not BODY_PART.search(place):
+                out.append(place)
+    return out
 
 
 def build_prompt(p, g, with_text, background_only=False):
@@ -615,20 +821,26 @@ def build_prompt(p, g, with_text, background_only=False):
     style = STYLES["知识卡片"] if card and im["style"] in ("实拍生活感", "产品特写") else STYLES.get(im["style"], STYLES["实拍生活感"])
     visual = g["visual"].strip().rstrip("。.")
     if background_only:
-        parts = ["只生成场景和背景，不要画出产品本身，产品的位置留空，用来叠放实拍图。场景参考：" + visual]
+        scene = scene_only(visual, product_terms(p))
+        parts = ["只生成场景和背景，不要画出任何产品，中下方留出一块干净的空位，用来叠放实拍的产品图",
+                 "场景：" + ("，".join(scene) if scene else "干净的桌面，自然光，生活化的环境"), style]
+    elif card and not with_text:
+        # 卡片上的字后期再加：描述里讲「写什么字」的那几句去掉，只留底图
+        base = [x for x in clauses(visual) if not WORDING.search(x)]
+        parts = ["只生成卡片的底图，不要出现任何文字、数字和字母", "，".join(base) if base else "纯色或浅色渐变背景，大面积留白", g["composition"], style]
     else:
         parts = [visual]
         if not card and g.get("product_in_frame", True) and im["subject"].strip():
             parts.append("画面中的产品：" + im["subject"].strip().rstrip("。."))
-    parts += [g["composition"], style]
+        parts += [g["composition"], style]
     if im["palette"].strip():
         parts.append("配色：" + im["palette"].strip())
     if im.get("brand_tag", "").strip():
         parts.append("顶部居中预留一小块品牌角标位置")
     parts.append("竖版 %s 构图，高清，细节清晰" % im["ratio"])
-    if with_text:
+    if with_text and not background_only:
         parts.append("画面中醒目的简体中文大字：“%s”，字体粗黑、清晰可读、无错别字" % g["text"].strip())
-    else:
+    elif not (card and not with_text):
         parts.append("预留干净的留白区域用于后期加字，画面中不要出现任何文字")
     return "，".join(x for x in parts if x)
 
@@ -636,27 +848,40 @@ def build_prompt(p, g, with_text, background_only=False):
 def cmd_prompts(a):
     p = load_plan(a)
     sync_facts(a, p)
-    E, _ = check_plan(p, [C.P(a, "banned_words.txt")])
+    E, _ = check_plan(p, [C.P(a, "banned_words.txt")], product_of(a))
     if E and not a.force:
         sys.exit("方案还有 %d 个错误，先运行 check 并补全：%s\n（确需跳过加 --force。）" % (len(E), C.cmd("content_plan.py", "check", "--id", p["id"])))
     im = p["image"]
     real = real_pages(p)
     size = "1242×1660" if im["ratio"] == "3:4" else "1080×1920"
+    kinds = OrderedDict((k, [g["no"] for g in p["pages"] if page_source(p, g) == k]) for k in ("实拍", "卡片", "AI 生成"))
+    nos = lambda k: "第 %s %s" % ("、".join(str(x) for x in kinds[k]), p["unit"])
     L = ["# 配图提示词 %s：%s" % (p["id"], p["product"]), "",
-         "- 风格：%s｜比例 %s（建议 %s 像素）｜共 %d %s，其中 %d %s用实拍" % (im["style"], im["ratio"], size, len(p["pages"]), p["unit"], len(real), p["unit"]),
-         "- 产品外观以实拍为准。AI 画出来的产品和实物不一样，读者收到货会觉得被骗：有实拍时用实拍，或者用实拍做参考图、只让 AI 生成背景。",
-         "- 系列一致：出现产品的图都用同一段产品描述，所有图用同一组配色；支持参考图的工具，把产品实拍或第 1 张生成结果作为参考图。",
-         "- 用了 AI 生成的图片，发布时在小红书发布页勾选「内容含 AI 合成」的声明。",
-         "- 提示词是中文，可直接用于支持中文的生图工具；用英文工具时，把提示词和反向提示词译成英文再用。%s" % ("已按「图中直接出字」生成，适合能稳定渲染中文的模型。" if a.with_text else "默认图中不出字，文字用修图或排版工具后期添加，最稳。"), ""]
+         "- 风格：%s｜比例 %s（建议 %s 像素）｜共 %d %s" % (im["style"], im["ratio"], size, len(p["pages"]), p["unit"]),
+         "- 这一篇要准备：%s。" % "；".join(x for x in (
+             "实拍 %d 张（%s），照「拍摄要求」拍，可以直接用" % (len(kinds["实拍"]), nos("实拍")) if kinds["实拍"] else "",
+             "卡片 %d 张（%s），用小红书发布页的文字模板或任何排版工具做最快，也可以用下面的底图提示词" % (len(kinds["卡片"]), nos("卡片")) if kinds["卡片"] else "",
+             "AI 生成 %d 张（%s）" % (len(kinds["AI 生成"]), nos("AI 生成")) if kinds["AI 生成"] else "") if x),
+         "- 产品外观以实拍为准。AI 画出来的产品和实物不一样，读者收到货会觉得被骗：有实拍时用实拍，或者用实拍做参考图、只让 AI 生成背景。"]
+    if kinds["AI 生成"] and im["subject"].strip():
+        L.append("- 系列一致：出现产品的图都用同一段产品描述，所有图用同一组配色；支持参考图的工具，把产品实拍或第 1 张生成结果作为参考图。")
+    else:
+        L.append("- 系列一致：所有图用同一组配色和同一种字体。")
+    L += ["- 用了 AI 生成的图片，发布时在小红书发布页勾选「内容含 AI 合成」的声明。",
+          "- 提示词是中文，可直接用于支持中文的生图工具；用英文工具时，把提示词和反向提示词译成英文再用。%s" % ("已按「图中直接出字」生成，适合能稳定渲染中文的模型。" if a.with_text else "默认图中不出字，文字用修图或排版工具后期添加，最稳。"),
+          "", "**反向提示词（每一张都用这一段）**", "", "```", NEGATIVE, "```", ""]
     for g in p["pages"]:
-        L += ["## 第 %d %s：%s" % (g["no"], p["unit"], g["role"]), ""]
-        if g["no"] in real:
-            L += ["**用实拍。** 拍摄要求：%s；%s。" % (g["visual"].strip().rstrip("。."), g["composition"]), "",
-                  "想让这一%s更有画面感，可以用 AI 辅助，但产品本身必须来自实拍：把实拍抠图后叠在下面这张背景上，或者用实拍做参考图（图生图）。发布时勾选 AI 声明。" % p["unit"], "",
-                  "**背景提示词（可选）**", "", "```", build_prompt(p, g, False, background_only=True), "```", "", "**反向提示词**", "", "```", NEGATIVE, "```", ""]
+        kind = page_source(p, g)
+        L += ["## 第 %d %s：%s（%s）" % (g["no"], p["unit"], g["role"], kind), ""]
+        if kind == "实拍":
+            L += ["**拍摄要求**：%s；%s。" % (g["visual"].strip().rstrip("。."), g["composition"]), "",
+                  "可选：想让这一%s更有画面感，用下面的提示词只生成背景，再把实拍抠图叠上去；或者用实拍做参考图（图生图）。产品本身必须来自实拍，用了就要勾选 AI 声明。不需要的话跳过。" % p["unit"], "",
+                  "```", build_prompt(p, g, False, background_only=True), "```", ""]
+        elif kind == "卡片" and not a.with_text:
+            L += ["**底图提示词**（用排版工具直接做卡片的话跳过）", "", "```", build_prompt(p, g, False), "```", ""]
         else:
-            L += ["**提示词**", "", "```", build_prompt(p, g, a.with_text), "```", "", "**反向提示词**", "", "```", NEGATIVE, "```", ""]
-        L += ["**后期加字**：%s" % g["text"], "- 位置：%s" % ("上方三分之一，居中" if g["role"] == "封面" else "顶部标题区，左对齐"),
+            L += ["**提示词**", "", "```", build_prompt(p, g, a.with_text), "```", ""]
+        L += ["**%s**：%s" % ("图上的字" if kind == "卡片" else "后期加字", g["text"]), "- 位置：%s" % ("上方三分之一，居中" if g["role"] == "封面" else "顶部标题区，左对齐"),
               "- 字体：粗黑体，字号以手机上一眼能读为准；重点词可用配色中的强调色"]
         if im.get("brand_tag", "").strip():
             L.append("- 品牌角标：顶部居中小字「%s」，每张图位置和样式相同" % im["brand_tag"].strip())

@@ -5,7 +5,7 @@
 约定：脚本可以从任何目录调用（用脚本的绝对路径），数据写在「当前工作目录/xhs_launch/」，
 也可以用 --dir 或环境变量 XHS_LAUNCH_DIR 指定。只依赖 Python 3 标准库。
 """
-import argparse, csv, io, json, os, re, shutil, sys
+import argparse, csv, io, json, math, os, re, shutil, sys
 from datetime import datetime, timedelta
 
 sys.dont_write_bytecode = True
@@ -155,6 +155,142 @@ def xhs_len(s):
     """小红书的计数习惯：中文和全角算 1，英文数字两个算 1。"""
     wide = len(re.findall(r"[^\x00-\x7f]", s))
     return wide + (len(re.findall(r"[\x21-\x7e]", s)) + 1) // 2
+
+
+# ---------- 百分比、数字和单位 ----------
+
+def pct(part, whole, digits=0):
+    """part / whole 写成百分比。直接从原始条数算，四舍五入（5 进 1），不经过中间的小数。whole 为 0 时返回「—」。"""
+    if not whole:
+        return "—"
+    scale = 10 ** digits
+    q = (200 * scale * int(part) + int(whole)) // (2 * int(whole))
+    return "%d%%" % q if not digits else "%d.%0*d%%" % (q // scale, digits, q % scale)
+
+
+def rate_pct(v, digits=1):
+    """比率（0.125）写成百分比（12.5%）。四舍五入，不用「五成双」。"""
+    scale = 10 ** digits
+    q = int(math.floor(abs(v) * 100 * scale + 0.5 + 1e-9))
+    body = "%d" % q if not digits else "%d.%0*d" % (q // scale, digits, q % scale)
+    return ("-" if v < 0 and q else "") + body + "%"
+
+
+_CN = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_CH = "一二两三四五六七八九十百半"
+
+
+def cn_num(s):
+    """「三」「十二」「二十」「两百」「半」→ 数；认不出返回 None。只管一千以内的常见写法。"""
+    if s == "半":
+        return 0.5
+    if not s or any(ch not in _CN and ch not in "十百" for ch in s):
+        return None
+    total = cur = 0
+    for ch in s:
+        if ch in _CN:
+            cur = _CN[ch]
+        else:
+            total, cur = total + (cur or 1) * (10 if ch == "十" else 100), 0
+    return total + cur
+
+
+# (写法, 归一后的单位, 换算系数, 是不是硬数字)。硬数字是价格、规格、时长、比例：写错一个就是虚假宣传。软数字是次数、人数、件数。
+# 归一后的单位是 None 时用原来的量词（支、片、盒…）。
+_UNITS = [
+    (r"元|块钱|rmb|块(?=$|[^一-鿿a-z0-9]|[的和跟与或就都也还能买左上不出多包以内一差起到了吗呢吧啊呀嘛])", "元", 1, True),
+    (r"kg|公斤|千克", "g", 1000, True), (r"斤", "g", 500, True), (r"克|g(?![a-z0-9])", "g", 1, True),
+    (r"ml|毫升", "ml", 1, True), (r"升|l(?![a-z0-9])", "ml", 1000, True),
+    (r"秒钟?", "分钟", 1.0 / 60, True), (r"分钟|min(?![a-z])", "分钟", 1, True), (r"个?小时|h(?![a-z0-9])", "分钟", 60, True),
+    (r"天", "天", 1, True), (r"个?星期|个?礼拜|周(?![年期末岁边围到全])", "天", 7, True),
+    (r"个月", "天", 30, True), (r"年(?![级代轻纪龄货夜])", "天", 365, True),      # 月和年只能约等于天数，比对时放宽一成
+    (r"%|％", "%", 1, True), (r"折", "折", 1, True), (r"倍", "倍", 1, True),
+    (r"mah|毫安时?", "mAh", 1, True), (r"cm|厘米", "cm", 1, True), (r"mm|毫米", "cm", 0.1, True), (r"英寸|寸", "寸", 1, True),
+    (r"次", "次", 1, False), (r"个人|人(?![民生类气间工们])|位", "人", 1, False),
+    (r"支|瓶|盒|包(?!邮)|片|粒|杯|袋|罐|颗|双|套|枚|贴", None, 1, False),
+]
+_UNIT_RX = "|".join("(?P<u%d>%s)" % (i, u[0]) for i, u in enumerate(_UNITS))
+_NUM = r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
+_QTY = re.compile(r"(?<![\d.a-z第])(?:(?P<lo>%s)\s*(?:-|~|～|—|到|至)\s*)?(?P<num>%s)\s*(?:%s)" % (_NUM, _NUM, _UNIT_RX))
+_QTY_PRE = re.compile(r"(?:[¥￥]|rmb)\s*(?P<num>%s)(?!\s*(?:元|块|%%|％))" % _NUM)
+# 「到手 59」「39.9 包邮」：没写单位，但说的是价格
+_QTY_PRICE = re.compile(r"(?:到手价?|只要|仅需|券后价?|折后价?|价格|售价|原价|现价|单价|定价|活动价|秒杀价?)\s*(?:是|为|才)?\s*[:：]?\s*(?P<a>%s)(?![\d.]|\s*(?:[a-z%%％一-鿿]))|(?<![\d.a-z第])(?P<b>%s)\s*包邮" % (_NUM, _NUM))
+_QTY_KUAI = re.compile(r"(?<![\d.a-z第])(\d+)\s*块\s*(\d)(?![\d个支片条只盒袋瓶罐颗粒件毛分a-z])|(?<![第%s])([%s]+)块([一二三四五六七八九])(?![一-鿿])" % (_CN_CH, _CN_CH[:-1]))
+_QTY_HALF = re.compile(r"(?<![\d.a-z第%s])(\d+|[%s]+)\s*(?:个半\s*(小时|月)|(年|个月|天|个?小时)半(?![一-鿿]))" % (_CN_CH, _CN_CH[:-1]))
+_HALF = {"小时": ("分钟", 60), "个小时": ("分钟", 60), "月": ("天", 30), "个月": ("天", 30), "年": ("天", 365), "天": ("天", 1)}
+_CN_UNITS = [u for u in _UNITS if u[1] in ("分钟", "天")] + [(r"块钱|元", "元", 1, True)]
+_IDIOM = re.compile(r"三天两头|一年四季|十年如一日|三年五载|一日三餐|三天打鱼|两天晒网|一天到晚|一年到头|百年")
+_QTY_CN = re.compile(r"(?<![第零%s])(?P<num>[%s]+)(?:%s)" % (_CN_CH, _CN_CH, "|".join("(?P<c%d>%s)" % (i, u[0]) for i, u in enumerate(_CN_UNITS))))
+_ONE_OK = "了用涂吃喝戴穿过等放泡敷满共约近续持试"
+# 宽松模式：中文数字配任何单位都认（每天涂三次、五十克、打八折）。只用在「出处」那一边，认多了只会让比对更宽，不会多报
+_LOOSE_UNITS = [(r"块钱|元", "元", 1, True)] + _UNITS[1:]
+_QTY_LOOSE = re.compile(r"(?<![第零%s])(?P<num>[%s]+)\s*(?:%s)" % (_CN_CH, _CN_CH[:-1], "|".join("(?P<c%d>%s)" % (i, u[0]) for i, u in enumerate(_LOOSE_UNITS))))
+
+
+def quantities(text, loose=False):
+    """找出文字里「数字 + 单位」的说法，换算成同一种单位，便于比对两段文字里的数字是不是同一个。
+    返回 [{"value": 数, "unit": 归一后的单位, "raw": 原文, "start": 位置, "hard": 是不是硬数字, "approx": 是不是约数}]，按出现顺序。
+    认「39 元」「¥39」「9块9」「50g」「30 秒」「两周」「半小时」「30-40 分钟」「8 个人」；不认序数（第 3 天）、年份（2026 年）、5G。
+    中文数字默认只认时长和价格（两周、九块九）；loose=True 时配任何单位都认（三次、五十克），给「用户说过的话」那一边用。"""
+    t = str(text)
+    low = t.lower()
+    out, taken = [], [x.span() for x in _IDIOM.finditer(low)]
+
+    def add(value, unit, hard, a, b, approx=False):
+        if value is None or any(a < y and x < b for x, y in taken) or low[:a].rstrip().endswith("第"):
+            return
+        taken.append((a, b))
+        out.append({"value": round(float(value), 4), "unit": unit, "raw": t[a:b].strip(), "start": a, "hard": hard, "approx": approx})
+
+    for m in _QTY_KUAI.finditer(low):
+        if m.group(1):
+            add(float(m.group(1)) + int(m.group(2)) / 10.0, "元", True, m.start(), m.end())
+        else:
+            head = cn_num(m.group(3))
+            add(None if head is None else head + _CN[m.group(4)] / 10.0, "元", True, m.start(), m.end())
+    for m in _QTY_HALF.finditer(low):
+        head = float(m.group(1)) if m.group(1).isdigit() else cn_num(m.group(1))
+        unit, k = _HALF[m.group(2) or m.group(3)]
+        add(None if head is None else (head + 0.5) * k, unit, True, m.start(), m.end(), k >= 30)
+    for m in _QTY_PRE.finditer(low):
+        add(float(m.group("num").replace(",", "")), "元", True, m.start(), m.end())
+    for m in _QTY_PRICE.finditer(low):
+        g = "a" if m.group("a") else "b"
+        add(float(m.group(g).replace(",", "")), "元", True, m.start(g), m.end(g))
+    for m in _QTY.finditer(low):
+        i = next(i for i in range(len(_UNITS)) if m.group("u%d" % i))
+        _, unit, k, hard = _UNITS[i]
+        word = m.group("u%d" % i)
+        v = float(m.group("num").replace(",", ""))
+        if word.startswith("年") and v >= 1900:                           # 2026 年：年份
+            continue
+        if unit == "g" and word == "g" and t[m.end("u%d" % i) - 1] == "G" and v in (2, 3, 4, 5, 6):   # 5G 网络
+            continue
+        if m.group("lo"):
+            add(float(m.group("lo").replace(",", "")) * k, unit or word, hard, m.start("lo"), m.end("lo"), k >= 30)
+        add(v * k, unit or word, hard, m.start("num"), m.end(), k >= 30)
+    for rx, units in ((_QTY_CN, _CN_UNITS),) + (((_QTY_LOOSE, _LOOSE_UNITS),) if loose else ()):
+        for m in rx.finditer(low):
+            i = next(i for i in range(len(units)) if m.group("c%d" % i))
+            _, unit, k, hard = units[i]
+            raw, word = m.group("num"), m.group("c%d" % i)
+            v = cn_num(raw)
+            if v is None or v == 0 or (raw == "半" and word == "天"):          # 等了半天：不是时长
+                continue
+            prev = low[m.start() - 1] if m.start() else ""
+            if raw == "一" and "一" <= prev <= "鿿" and prev not in _ONE_OK:      # 有一天、每一年：不是在报数
+                continue
+            add(v * k, unit or word, hard, m.start(), m.end(), k >= 30)
+    out.sort(key=lambda q: q["start"])
+    return out
+
+
+def same_quantity(a, b):
+    """两个说法是不是同一个数。带「月」「年」的是约数（一个月 ≈ 30 天 ≈ 4 周），放宽一成；其余要完全相等。"""
+    if a["unit"] != b["unit"]:
+        return False
+    tol = 0.1 if a.get("approx") or b.get("approx") else 1e-6
+    return abs(a["value"] - b["value"]) <= tol * max(abs(a["value"]), abs(b["value"]), 1e-9)
 
 
 def table_rows(text, ext=""):

@@ -4,7 +4,7 @@
 
 用法（在你自己的工作目录运行，脚本用绝对路径）:
   python3 research.py keywords [--category 品类] [--selling-points a,b] [--audience ..] [--pains a,b] [--competitors a,b] [--full]
-        给出 6 到 8 个搜索词（--full 给完整矩阵）。品类、卖点、人群不写时用产品档案里的
+        给出 4 个必搜词和几个可选词（--full 给完整矩阵）。品类、卖点、人群不写时用产品档案里的
   python3 research.py add 文件 [更多文件…] [--keyword 搜索词] [--replace]
         把笔记并入语料库，并打印识别结果供核对。自动识别：
         - 从 App / 网页搜索结果直接复制的文本（标题、作者、点赞数各占一行）
@@ -70,11 +70,14 @@ ANGLES = [
      ["宝藏", "神器", "天花板", "yyds", "绝了", "爱了", "真香", "续命", "离不开", "别再问", "好用", "好吃", "好喝", "好看", "好闻", "好穿", "re:被.{0,4}(?:问|夸|要链接|种草)"]),
     ("个人故事", ["日记", "vlog", "那年"], ["我的", "我是", "终于", "坚持", "经历", "记录", "一周", "一个月", "我做了", "我开了", "创业", "辞职", "打卡"]),
 ]
+# 「不踩雷」「不会后悔」是在夸，不是避雷帖
+NOT_NEGATED = r"(?<![不没无零])(?<!不会)(?<!不是)(?<!没有)(?<!不再)(?<!不怕)"
 HOOKS = [
     ("含数字", r"\d"),
-    ("疑问句", r"[?？]|吗|怎么|如何|为什么|哪个"),
-    ("点名人群", r"学生党|打工人|新手|小白|宝妈|上班族|女生|男生|租房|宿舍|社畜|懒人|党"),
-    ("负面/避雷", r"避雷|踩坑|踩雷|别买|后悔|千万别|智商税|劝退|翻车"),
+    ("疑问句", r"[?？]|吗|怎么|如何|为什么|哪(?!怕)|多少|(?<!没)什么|几[个支款种次天块元]|难道|是否|(?!动不动|时不时)([一-鿿])[不没]\1"),
+    ("点名人群", r"学生党|打工人|新手|小白|宝妈|宝爸|上班族|女生|男生|男士|女士|租房|宿舍|社畜|懒人|党|程序员|孕妇|敏感肌|[干油敏痘]皮|[干油敏]肌|混[干油]"
+                 r"|的人(?![气品生群数物])|星人|一族|姐妹|集美|大学生|考研|妈妈|爸爸|宝宝|儿童|老人|长辈|小个子|微胖|通勤族"),
+    ("负面/避雷", NOT_NEGATED + r"(?:避雷|避坑|踩坑|踩雷|别买|后悔(?!没早|没有早|买晚|没早点)|千万别|智商税|劝退|翻车|黑榜|不推荐|拔草|慎入|慎买|难用|鸡肋|被坑|交学费|怀疑人生)"),
     ("反差/意外", r"以为|没想到|居然|竟然|结果|原来|才知道"),
     ("结果承诺", r"只需|只要|搞定|学会|秒|分钟|一招|直接"),
     ("新闻动词", r"上线|公布|发布|开启|首发|揭晓|提出|来了|入驻"),
@@ -83,7 +86,6 @@ HOOKS = [
     ("分隔符｜", r"[｜|]"),
     ("表情符号", "[\U0001F300-\U0001FAFF☀-➿]"),
 ]
-METRICS = ("likes", "collects", "comments", "shares")
 ZH = {"likes": "点赞数", "collects": "收藏数", "comments": "评论数", "followers": "粉丝数", "date": "日期", "author": "作者"}
 
 
@@ -300,7 +302,7 @@ def parse_note_blocks(lines):
                 orphan += 1
         else:
             cur.append(l)
-    out, sizes = [], []
+    out, sizes, bare = [], [], 0
     for b, cnt in blocks:
         raw, texts, kinds = {}, [], []
         for l in b:
@@ -328,11 +330,14 @@ def parse_note_blocks(lines):
                 raw["desc"] = " ".join(texts[1:-1])
         m = re.match(C.COUNT, cnt)
         raw["likes"] = m.group(0) if m and re.match(r"\d", cnt) else "0"
+        bare += raw["likes"] == "0" and not re.match(r"\d", cnt)
         out.append(raw)
     if not out:
         return None
     usual = Counter(sizes).most_common(1)[0][0]
     info = {"format": "从 App / 网页搜索结果复制的卡片（%s）" % {1: "标题 / 点赞数", 2: "标题 / 作者 / 点赞数"}.get(usual, "标题 / 摘要 / 作者 / 点赞数"), "warnings": []}
+    if bare:
+        info["notes"] = ["有 %d 篇的点赞位置只有「赞」字、没有数字：还没有人点赞时页面就是这样显示的，已记为 0 赞（这是读到的 0，不是缺失）。" % bare]
     odd = sum(1 for s in sizes if s != usual)
     if odd:
         info["warnings"].append("有 %d 篇的行数和别的不一样（多数是 %d 行文字加 1 行点赞数），标题和作者可能错位，请核对。" % (odd, usual))
@@ -521,7 +526,7 @@ def adjuster(notes):
             return "粉丝量影响小", {id(n): n["_eng"] for n in fans}, "各账号粉丝量相差 %d 倍，但在这批笔记里粉丝多少和互动高低基本无关，直接比较互动数。%s" % (times, rest)
         return "按粉丝量校正", {id(n): n["_eng"] / max(n["followers"], 100) ** k for n in fans}, \
             "各账号粉丝量相差 %d 倍。在这批笔记里粉丝每多 10 倍，互动约多 %.1f 倍；下面的倍数已扣除这一影响，避免大号把某种写法带高。%s" % (times, 10 ** k, rest)
-    return None, raw, "⚠️ 粉丝数不全，下面的倍数没有按账号大小校正：互动高可能只是因为账号大，只能当线索。"
+    return None, raw, "⚠️ 粉丝数不全，下面的倍数没有按账号大小校正：互动高可能只是因为账号大。倍数都标了「线索」，不出角度、钩子、形式的假设。"
 
 
 def score(notes):
@@ -667,12 +672,16 @@ def analyze(notes, days=90, top=10, insight=None, selling=None, lex=None):
     method, adj, adj_note = adjuster(notes)
     med_adj = median(list(adj.values())) if adj else 0
     authors = {n["author"] for n in notes if n["author"]}
+    liked = [n for n in notes if n["likes"] is not None]
     R = {"total_input": total_in, "merged": merged, "analyzed": n_all, "with_engagement": n_eng, "dropped_old": dropped_old, "days": days,
          "basis": "赞 + 2×藏 + 3×评" if basis == "full" else "仅点赞",
+         "basis_counts": {"liked": len(liked), "full": sum(1 for n in liked if n["collects"] is not None and n["comments"] is not None)},
+         "lexicons": [os.path.basename(p) for p, _ in getattr(lex, "loaded", [])], "lexicon_notes": list(getattr(lex, "notes", [])),
          "missing": {k: sum(1 for n in notes if n[k] is None) for k in ("likes", "collects", "comments", "followers", "date")},
          "authors": len(authors), "no_author": sum(1 for n in notes if not n["author"]),
          "median_engagement": med, "adjust": method, "adjust_note": adj_note, "sample_sufficient": n_eng >= MIN_NOTES}
     stats_ok = R["sample_sufficient"]
+    firm = stats_ok and method is not None      # 倍数能不能当结论：样本够，并且排除得了账号大小的影响。排除不了时只当线索
 
     # 撞卖点
     same = []
@@ -706,11 +715,14 @@ def analyze(notes, days=90, top=10, insight=None, selling=None, lex=None):
         if not g:
             continue
         best = max(gv, key=lambda n: n["_eng"], default=None)
-        vs = round(median([adj[id(n)] for n in gv if id(n) in adj]) / med_adj, 2) if med_adj and len([n for n in gv if id(n) in adj]) >= MIN_MENTIONS else None
+        comp = [n for n in gv if id(n) in adj]              # 可比的：有互动数据，并且能按账号大小校正
+        vs = round(median([adj[id(n)] for n in comp]) / med_adj, 2) if med_adj and len(comp) >= MIN_MENTIONS else None
         sp = spread(g)
+        words = next((a[1] + a[2] for a in ANGLES if a[0] == name), [])
         angles.append({"angle": name, "count": len(g), "share": round(len(g) / n_all, 3), "median_engagement": median([n["_eng"] for n in gv]) if gv else None,
+                       "comparable": len(comp), "in_title": sum(1 for n in notes if any(has_word(n["title"], w) for w in words)) if words else None,
                        "vs_overall": vs, "authors": sp, "low_fan_hits": sum(1 for n in g if n["low_fan_hit"]), "best": ref(best) if best else "",
-                       "opportunity": bool(stats_ok and name != "其他" and len([n for n in gv if id(n) in adj]) >= MIN_GROUP and len(g) / n_all <= 0.2 and vs is not None and vs >= 1.2
+                       "opportunity": bool(firm and name != "其他" and len(comp) >= MIN_GROUP and len(g) / n_all <= 0.2 and vs is not None and vs >= 1.2
                                            and (sp is None or sp >= min(MIN_AUTHORS, len(authors))))})
     R["angles"] = sorted(angles, key=lambda x: (x["angle"] == "其他", -x["count"]))
 
@@ -726,7 +738,7 @@ def analyze(notes, days=90, top=10, insight=None, selling=None, lex=None):
         per = by_author(w, wo)
         agree = all((v >= 1) == (lift >= 1) for v in per.values()) if lift is not None and len(per) >= 2 else None    # 各账号内部的方向是否一致
         wide = len(authors) <= 1 or sp is None or (sp >= MIN_AUTHORS and top_author[0][1] <= len(w) * 0.6)                 # 不是只来自一两个账号
-        solid = bool(stats_ok and lift is not None and agree is not False and (wide or agree))
+        solid = bool(firm and lift is not None and agree is not False and (wide or agree))
         hooks.append({"hook": name, "used": len(w), "share": round(len(w) / n_eng, 3) if n_eng else 0, "lift": lift, "authors": sp, "solid": solid,
                       "by_author": per, "consistent": agree, "example": ref(ex) if ex else ""})
     R["hooks"] = sorted(hooks, key=lambda x: -(x["lift"] or 0))
@@ -751,8 +763,9 @@ def analyze(notes, days=90, top=10, insight=None, selling=None, lex=None):
 
     # 需求侧：评论洞察（comment_insight.py --research 的结果），没有就用笔记自带的评论
     demand, source = insight, "评论洞察文件"
+    embedded = [{"text": c["text"], "likes": c.get("likes") or 0, "user": "", "author": False} for n in notes for c in n.get("comment_list", [])]
+    R["embedded_comments"], R["embedded_unused"] = len(embedded), len(embedded) if demand else 0
     if not demand:
-        embedded = [{"text": c["text"], "likes": c.get("likes") or 0, "user": "", "author": False} for n in notes for c in n.get("comment_list", [])]
         if len(embedded) >= 5:
             cleaned, stat = ci.prepare(embedded, lex)
             if cleaned:
@@ -770,7 +783,8 @@ def analyze(notes, days=90, top=10, insight=None, selling=None, lex=None):
             in_body = [n for n in notes if n not in in_title and any(w in n["desc"].lower() for w in words)]
             gaps.append({"aspect": a["aspect"], "complaints": a.get("complaints", 0), "questions": a.get("questions", 0), "concern": concern, "words": words[:4],
                          "notes_in_title": len(in_title), "notes_in_body": len(in_body), "title_share": round(len(in_title) / n_all, 3),
-                         "examples": [n["title"][:24] for n in in_title[:2]], "quotes": (a.get("complaint_quotes", []) + a.get("question_quotes", []))[:2],
+                         "examples": [n["title"][:24] for n in in_title[:2]], "titles": [n["title"] for n in in_title[:10]],
+                         "quotes": (a.get("complaint_quotes", []) + a.get("question_quotes", []))[:2],
                          "gap": bool(concern >= MIN_MENTIONS and len(in_title) / n_all <= 0.1)})
         gaps.sort(key=lambda x: (-x["gap"], -x["concern"]))
         R["question_topics"] = demand.get("question_topics", [])[:6]
@@ -796,12 +810,12 @@ def analyze(notes, days=90, top=10, insight=None, selling=None, lex=None):
     if a:
         base = "常见的「%s」角度" % named[0]["angle"] if named[0]["angle"] != a["angle"] else "这个品类的整体水平"
         H.append({"basis": "角度机会", "hypothesis": "用「%s」角度发布，互动率会高于%s" % (a["angle"], base),
-                  "evidence": "该角度 %d 篇，只占 %.0f%%，互动中位数是整体的 %.1f 倍（%s）" % (a["count"], a["share"] * 100, a["vs_overall"], method or "未按账号大小校正"), "metric": "互动率"})
+                  "evidence": "该角度 %d 篇，只占 %s，互动中位数是整体的 %.1f 倍（%s）" % (a["count"], C.pct(a["count"], n_all), a["vs_overall"], method or "未按账号大小校正"), "metric": "互动率"})
     h = next((h for h in R["hooks"] if h["solid"] and h["lift"] >= 1.3), None)
     if h:
         H.append({"basis": "标题钩子", "hypothesis": "标题使用「%s」会比不使用的点击率更高" % h["hook"],
                   "evidence": "%d 篇使用，互动中位数是未使用的 %.1f 倍（%s）" % (h["used"], h["lift"], method or "未按账号大小校正"), "metric": "点击率"})
-    if form_lift and stats_ok and (form_lift >= 1.3 or form_lift <= 0.77):
+    if form_lift and firm and (form_lift >= 1.3 or form_lift <= 0.77):
         b, o = ("视频", "图文") if form_lift >= 1.3 else ("图文", "视频")
         if (forms[b]["authors"] or MIN_AUTHORS) >= min(MIN_AUTHORS, max(1, len(authors))):
             H.append({"basis": "内容形式", "hypothesis": "同一角度用%s发布，互动率会高于%s" % (b, o),
@@ -809,9 +823,37 @@ def analyze(notes, days=90, top=10, insight=None, selling=None, lex=None):
                       "metric": "互动率"})
     if not stats_ok:
         why_not.append("有互动数据的笔记只有 %d 篇，不到 %d 篇：角度、钩子、形式的比较不出假设。" % (n_eng, MIN_NOTES))
-    elif method is None and not any(x["basis"] in ("角度机会", "标题钩子", "内容形式") for x in H):
-        why_not.append("没有粉丝数，角度和钩子的倍数可能只反映账号大小，没有达到出假设的条件。")
+    if method is None:          # 两样都缺时两样都说：只补到 20 篇，倍数仍然只是线索，不要让用户白跑一趟
+        why_not.append("粉丝数不全，倍数没法按账号大小校正：角度、钩子、形式的比较只当线索，不出假设。" if stats_ok else
+                       "粉丝数也不全：就算补够篇数，倍数没法按账号大小校正，角度、钩子、形式的比较仍然只当线索。")
     R["hypotheses"], R["no_hypothesis_reasons"] = H, why_not
+    # 线索候选：没有一条达到标准时，把最接近的几条列出来，并说清还差什么。只能当线索试，不能当结论
+    leads = []
+    if not H:
+        thin = "有互动数据的笔记只有 %d 篇，不到 %d 篇" % (n_eng, MIN_NOTES)
+        no_fans = "粉丝数不全，分不清是写法的功劳还是账号大"
+        weak = "；".join(x for x in (thin if not stats_ok else "", no_fans if method is None else "") if x)      # 倍数为什么还不能当结论
+        if g:
+            leads.append({"basis": "需求缺口", "hypothesis": "以「%s」这个关注点开头的笔记，评论率会高于泛卖点开头" % g["aspect"], "metric": "评论率",
+                          "evidence": "%d 条评论里有 %d 条在吐槽或追问它，%d 篇笔记里只有 %d 篇在标题回应" % (R["demand_comments"], g["concern"], n_all, g["notes_in_title"]),
+                          "short_of": "评论只有 %d 条，不到 %d 条" % (R["demand_comments"], ci.MIN_COMMENTS) if R["demand_comments"] < ci.MIN_COMMENTS else "评论的条数还没有核对"})
+        hot = next((x for x in sorted(gaps, key=lambda x: -x["concern"]) if x["concern"] >= MIN_MENTIONS and not x["gap"]), None)
+        if hot and not g:      # 评论里最在意的点已经有人写了：不是缺口，但仍然是读者最想看到回应的地方
+            leads.append({"basis": "最受关注的点", "hypothesis": "用评论里的原话开头、正面回应「%s」的笔记，评论率会高于罗列卖点的开头" % hot["aspect"], "metric": "评论率",
+                          "evidence": "%d 条评论里有 %d 条在吐槽或追问它%s" % (R["demand_comments"], hot["concern"], "，例如“%s”" % cut(hot["quotes"][0]) if hot["quotes"] else ""),
+                          "short_of": "不是缺口：已经有 %d 篇笔记在标题回应，要讲出和它们不一样的地方%s" % (
+                              hot["notes_in_title"], "" if R.get("demand_sufficient") else "；评论也只有 %d 条，不到 %d 条" % (R["demand_comments"], ci.MIN_COMMENTS))})
+        hk = next((h for h in R["hooks"] if h["lift"] and h["lift"] >= 1.3 and not h["solid"]), None)
+        if hk:
+            leads.append({"basis": "标题钩子", "hypothesis": "标题使用「%s」会比不使用的点击率更高" % hk["hook"], "metric": "点击率",
+                          "evidence": "%d 篇使用，互动中位数是未使用的 %.1f 倍（%s）" % (hk["used"], hk["lift"], method or "未按账号大小校正"),
+                          "short_of": weak or "只来自一两个账号，或者各账号内部的方向不一致"})
+        an = next((x for x in named if x["vs_overall"] and x["vs_overall"] >= 1.2 and x["count"] / n_all <= 0.2 and not x["opportunity"]), None)
+        if an:
+            leads.append({"basis": "角度机会", "hypothesis": "用「%s」角度发布，互动率会高于这个品类的整体水平" % an["angle"], "metric": "互动率",
+                          "evidence": "该角度 %d 篇，占 %s，互动中位数是整体的 %.1f 倍（%s）" % (an["count"], C.pct(an["count"], n_all), an["vs_overall"], method or "未按账号大小校正"),
+                          "short_of": weak or "可比的笔记不到 %d 篇，或者只来自一两个账号" % MIN_GROUP})
+    R["leads"] = leads[:3]
     for n in notes:
         n.pop("_eng", None)
     return R
@@ -844,7 +886,9 @@ def to_markdown(R, topic):
     if R["dropped_old"]:
         steps.append("剔除超过 %d 天的 %d 篇" % (R["days"], R["dropped_old"]))
     L.append("- %s，分析 **%d** 篇，来自 %s。" % ("，".join(steps), n, ("%d 个作者" % R["authors"]) + ("（另有 %d 篇作者未知）" % R["no_author"] if R["no_author"] and R["authors"] else "") if R["authors"] else "未知作者"))
-    L.append("- 互动口径：**%s**。%s" % (R["basis"], "多数笔记没有收藏数或评论数，所以只比点赞；缺的数字按未知处理，不当 0。" if R["basis"] == "仅点赞" else "三项不全的笔记不参与表现比较。"))
+    bc = R.get("basis_counts") or {}
+    L.append("- 互动口径：**%s**。%s" % (R["basis"], "有点赞数的 %d 篇里，收藏数和评论数也齐全的只有 %d 篇，不到八成，所以只比点赞；缺的数字按未知处理，不当 0。" % (bc.get("liked", 0), bc.get("full", 0))
+                                    if R["basis"] == "仅点赞" else "三项不全的笔记不参与表现比较。"))
     lack = ["%s %d 篇" % (ZH[k], v) for k, v in mi.items() if v]
     if lack:
         L.append("- 缺失：%s。%s" % ("，".join(lack), "没有粉丝数就无法识别低粉爆款。" if mi["followers"] else ""))
@@ -853,9 +897,15 @@ def to_markdown(R, topic):
     elif R["with_engagement"] < n:
         L.append("- %d 篇有互动数据，表现比较只用这些。" % R["with_engagement"])
     L.append("- %s" % R["adjust_note"])
-    if not R["sample_sufficient"]:
-        L.append("- ⚠️ **有互动数据的笔记不到 %d 篇**：下面的倍数只能当线索，不出统计类假设。再搜两三个词补到 %d 篇以上。" % (MIN_NOTES, MIN_NOTES))
+    thin = not R["sample_sufficient"]
+    if thin:
+        L.append("- ⚠️ **有互动数据的笔记只有 %d 篇，不到 %d 篇**：下面的倍数都标了「线索」，不出统计类假设。再搜一两个词补到 %d 篇以上。" % (R["with_engagement"], MIN_NOTES, MIN_NOTES))
+    if R.get("lexicons"):
+        L.append("- 已加载项目词表：%s。词表变了，「需求缺口」里各维度的数字会跟着变。" % "、".join(R["lexicons"]))
+        L += ["  - " + x for x in R.get("lexicon_notes") or []]
     L += ["- 数据只来自已收集的笔记，会有推广帖和幸存者偏差；所有数字为脚本计数。", ""]
+    loose = thin or R["adjust"] is None                                                # 样本不够，或者没法按账号大小校正：每个倍数旁边都标出来
+    times = lambda v, fmt="%.1f": (fmt + " 倍%s") % (v, "（线索）" if loose else "")
 
     L += ["## 1. 撞卖点：你的卖点有没有人讲过", ""]
     if not R["same_selling_point"]:
@@ -869,24 +919,32 @@ def to_markdown(R, topic):
         if not s["notes"]:
             L.append("- **%s**：%d 篇里没有笔记提到（查的说法：%s）%s。可能是空白，也可能只是说法不同：补上别的说法再查一次，再下「没人讲过」的结论。" % (s["selling_point"], n, used, wide))
             continue
-        L.append("- **%s**：%d 篇提到（%.0f%%），其中 %d 篇写进了标题（查的说法：%s）%s。这个卖点已经有人在讲，先看它们怎么讲，再决定怎么讲得不一样：" % (
-            s["selling_point"], s["notes"], s["share"] * 100, s["in_title"], used, wide))
+        L.append("- **%s**：%d 篇提到（%s），其中 %d 篇写进了标题（查的说法：%s）%s。这个卖点已经有人在讲，先看它们怎么讲，再决定怎么讲得不一样：" % (
+            s["selling_point"], s["notes"], C.pct(s["notes"], n), s["in_title"], used, wide))
         L += ["  - " + fmt_note(b) + ("｜命中「%s」" % b["matched"] if b.get("matched") else "") for b in s["top"]]
-    L += ["", "## 2. 角度供给：大家都在发什么", "", "「其他」是没能归类的笔记，不参与比较。机会 = 至少 %d 篇、占比不超过 20%%、互动是整体的 1.2 倍以上，并且不是只来自一两个账号。能参与比较的笔记不到 %d 篇的角度不算倍数，显示为「—」。" % (MIN_GROUP, MIN_MENTIONS), "",
-          "| 角度 | 篇数 | 占比 | 互动中位数 | 相对整体(倍) | 作者数 | 代表笔记 | 机会 |", "|---|---|---|---|---|---|---|---|"]
+    L += ["", "## 2. 角度供给：大家都在发什么", "",
+          "每篇笔记只归一个角度：先看标题里明确的说法，再看不太确定的说法，按下表角度的固定顺序取第一个命中的。标题里同时有「怎么选」和「实测」的，只算进「对比平替」。"
+          "「标题带这类词」是标题里出现这个角度的词的篇数，不管它最后归到哪，所以可能比「篇数」多。「其他」是没能归类的笔记，不参与比较。", "",
+          ("「可比篇数」是有互动数据的篇数，倍数用它们算。这一批的倍数没有按账号大小校正。" if R["adjust"] is None else
+             "「可比篇数」是有互动数据、并且能按账号大小校正的篇数，倍数只用它们算；「互动中位数」用这个角度全部有互动数据的笔记算，两列的口径不同。") +
+          "机会 = 可比篇数至少 %d 篇、占比不超过 20%%、相对整体 1.2 倍以上，并且不是只来自一两个账号%s。可比篇数不到 %d 篇不算倍数，显示为「—」。" % (
+              MIN_GROUP, "；有互动数据的笔记不到 %d 篇时不标机会" % MIN_NOTES if thin else "；倍数没有按账号大小校正时不标机会" if loose else "", MIN_MENTIONS), "",
+          "| 角度 | 篇数 | 占比 | 标题带这类词 | 互动中位数 | 可比篇数 | 相对整体 | 作者数 | 代表笔记 | 机会 |", "|---|---|---|---|---|---|---|---|---|---|"]
     for a in R["angles"]:
-        L.append("| %s | %d | %.0f%% | %s | %s | %s | %s | %s |" % (a["angle"], a["count"], a["share"] * 100, fmt_n(a["median_engagement"]), a["vs_overall"] if a["vs_overall"] is not None and a["angle"] != "其他" else "—",
-                                                             a["authors"] if a["authors"] is not None else "—", a["best"], "✅ 供给少互动高" if a["opportunity"] else ""))
-    L += ["", "## 3. 标题钩子：哪种写法互动更高", "", "标题长度中位数 %s 字。提升度 = 用了这种写法的互动中位数 ÷ 没用的；两边各少于 %d 篇不计算。「各账号内部」是在单个账号里各比一次的结果。「可用」= 样本够，并且不是只来自一两个账号，或者在两个以上账号内部方向一致。" % (fmt_n(R["title_len_median"]), MIN_GROUP), "",
+        L.append("| %s | %d | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+            a["angle"], a["count"], C.pct(a["count"], n), a["in_title"] if a.get("in_title") is not None else "—", fmt_n(a["median_engagement"]), a.get("comparable", "—"),
+            times(a["vs_overall"], "%s") if a["vs_overall"] is not None and a["angle"] != "其他" else "—",
+            a["authors"] if a["authors"] is not None else "—", a["best"], "✅ 供给少互动高" if a["opportunity"] else ""))
+    L += ["", "## 3. 标题钩子：哪种写法互动更高", "", "标题长度中位数 %s 字。提升度 = 用了这种写法的互动中位数 ÷ 没用的；两边各少于 %d 篇不计算。「各账号内部」是在单个账号里各比一次的结果。「可用」= 样本够、倍数排除得了账号大小的影响，并且不是只来自一两个账号，或者在两个以上账号内部方向一致。" % (fmt_n(R["title_len_median"]), MIN_GROUP), "",
           "| 钩子 | 使用篇数 | 占比 | 提升度 | 作者数 | 各账号内部 | 可用 | 代表标题 |", "|---|---|---|---|---|---|---|---|"]
     for h in R["hooks"]:
         per = " / ".join("%s %.1f" % (cut(k, 8), v) for k, v in h.get("by_author", {}).items())
-        L.append("| %s | %d | %.0f%% | %s | %s | %s | %s | %s |" % (h["hook"], h["used"], h["share"] * 100, ("%.1f 倍" % h["lift"]) if h["lift"] else "样本不足", h["authors"] if h["authors"] is not None else "—",
-                                                             per or "—", "是" if h["solid"] else ("各账号不一致" if h.get("consistent") is False else ""), h["example"]))
+        L.append("| %s | %d | %s | %s | %s | %s | %s | %s |" % (h["hook"], h["used"], C.pct(h["used"], R["with_engagement"]), times(float(h["lift"])) if h["lift"] else "样本不足", h["authors"] if h["authors"] is not None else "—",
+                                                         per or "—", "是" if h["solid"] else ("各账号不一致" if h.get("consistent") is False else ""), h["example"]))
     L += ["", "标题高频词：" + ("、".join("%s(%d)" % (k["word"], k["notes"]) for k in R["title_keywords"]) or "无")]
     if R["forms"]:
         L += ["", "形式：" + "；".join("%s %d 篇，互动中位数 %s" % (k, v["count"], fmt_n(v["median_engagement"])) for k, v in R["forms"].items())
-              + ("。视频是图文的 %.1f 倍（%s）%s%s。" % (R["form_lift_video_vs_image"], R["adjust"] or "未按账号大小校正",
+              + ("。视频是图文的 %.1f 倍%s（%s）%s%s。" % (R["form_lift_video_vs_image"], "（线索）" if loose else "", R["adjust"] or "未按账号大小校正",
                                                  "；账号内部：" + " / ".join("%s %.1f" % (cut(k, 8), v) for k, v in R["form_lift_by_author"].items()) if R.get("form_lift_by_author") else "",
                                                  "；较少的一种只来自 %d 个账号，只能当线索" % min(v["authors"] for v in R["forms"].values()) if min((v["authors"] or MIN_AUTHORS) for v in R["forms"].values()) < min(MIN_AUTHORS, max(1, R["authors"])) else "")
                  if R["form_lift_video_vs_image"] else "。任何一种不到 %d 篇时不比较。" % MIN_GROUP)]
@@ -900,10 +958,13 @@ def to_markdown(R, topic):
               % (R.get("demand_comments", 0), R.get("demand_source", ""), MIN_MENTIONS), "",
               "| 关注点 | 吐槽 | 疑问 | 标题回应 | 仅正文提到 | 判断 | 用户原话 |", "|---|---|---|---|---|---|---|"]
         for g in R["gaps"]:
-            L.append("| %s | %d | %d | %d 篇%s | %d 篇 | %s | %s |" % (g["aspect"], g["complaints"], g["questions"], g["notes_in_title"], ("（如「%s」）" % g["examples"][0]) if g["examples"] else "", g["notes_in_body"],
-                                                               "🎯 缺口" if g["gap"] else ("提及较少" if g["concern"] < MIN_MENTIONS else "已有供给"), " / ".join("“%s”" % cut(q) for q in g["quotes"])))
+            L.append("| %s | %d | %d | %d 篇%s | %d 篇 | %s | %s |" % (g["aspect"], g["complaints"], g["questions"], g["notes_in_title"], ("（如%s）" % "".join("「%s」" % x for x in g["examples"][:2])) if g["examples"] else "", g["notes_in_body"],
+                                                               ("🎯 缺口" if R.get("demand_sufficient") else "缺口（线索）") if g["gap"] else ("提及较少" if g["concern"] < MIN_MENTIONS else "已有供给"), " / ".join("“%s”" % cut(q) for q in g["quotes"])))
+        L += ["", "「标题回应」只认字面：标题里有这个维度词表里的词才算。括号里是算进去的标题，最多列两篇，全部在 analysis.json 的 gaps 里；觉得漏了或多了，对着标题核一遍。"]
         if not R.get("demand_sufficient"):
             L += ["", "⚠️ 评论不到 %d 条（或解析有疑点），缺口只能当线索。" % ci.MIN_COMMENTS]
+        if R.get("embedded_unused"):
+            L += ["", "笔记数据里还自带 %d 条评论，这次没有用：有评论洞察文件时只用洞察文件。想一起算，把这些评论另存成文件，和原来的评论文件一起交给 comment_insight.py --research（可以一次给多个文件）。" % R["embedded_unused"]]
         if R.get("question_topics"):
             L += ["", "评论区的问题，按主题计数（可直接做选题）："] + ["- **%s** %d 条：%s" % (q["topic"], q["count"], " / ".join(cut(x) for x in q["examples"])) for q in R["question_topics"]]
     L += ["", "## 5. 低粉爆款：最值得模仿的", "", "条件：粉丝少于 5000 且点赞过千，或点赞不少于 300 且赞粉比不低于 1。说明靠的是内容而不是账号。", ""]
@@ -917,8 +978,18 @@ def to_markdown(R, topic):
         L.append("数据没有给出达到标准的假设。")
     L += ["- " + w for w in R["no_hypothesis_reasons"]]
     if not R["hypotheses"]:
-        L.append("可以补数据后重跑；也可以由你根据上面的表提出假设，但要在依据里写明「样本不足，先当线索」。")
+        if R.get("leads"):
+            L += ["", "**线索候选**（没有达到标准，只能先试试看。选它的话，登记时把「依据」和「还差什么」一起抄进 --evidence，开头写「先当线索」）：", ""]
+            for i, h in enumerate(R["leads"], 1):
+                L += ["%d. **%s（线索）**：%s" % (i, h["basis"], h["hypothesis"]), "   - 依据：%s" % h["evidence"], "   - 还差什么：%s" % h["short_of"], "   - 主指标：%s" % h["metric"]]
+            L += ["", "补数据后重跑，线索可能变成正式的候选。"]
+        else:
+            L.append("可以补数据后重跑；也可以由你根据上面的表提出假设，但要在依据里写明「先当线索」和还差什么。")
     L += ["", "只选一条登记：`%s`" % C.cmd("launch_log.py", "add", "--title", '"暂定标题"', "--angle", '"角度"', "--hypothesis", '"假设"', "--evidence", '"依据"')]
+    if R.get("no_comparator"):
+        L += ["", "还没有一篇有数据的发布可以比，所以「高于基线」「高于 L1」这类假设暂时比不了。两条路选一条：",
+              "- 这一篇照常登记假设。发布后的结论先记「证据不足」，它的数据就是下一篇的对照。",
+              "- 以前发过同一个产品的笔记，先把它登记成基线：`%s`" % C.cmd("launch_log.py", "add", "--title", '"那一篇的标题"', "--baseline", "--published", "发布日期")]
     return "\n".join(L)
 
 
@@ -932,7 +1003,9 @@ def corpus_path(a):
     return getattr(a, "corpus", None) or C.P(a, "research", "notes.json")
 
 
-PERSONA = r"学生党|打工人|上班族|宝妈|宝爸|新手|小白|租房党?|宿舍党?|社畜|懒人|通勤党?|出差党?|[\u4e00-\u9fff]{2,3}(?:党|星人|人群|肌|皮)"
+PERSONA = r"学生党|打工人|上班族|宝妈|宝爸|新手|小白|租房党?|宿舍党?|社畜|懒人|通勤党?|出差党?|独居|合租|备考|考研党?|加班|熬夜|带娃|健身|露营|程序员|[\u4e00-\u9fff]{2,3}(?:党|星人|人群|肌|皮)"
+MUST_TERMS, TOP_PER_TERM = 4, 8          # 手动调研的工作量：4 个必搜词，每个看前 8 篇，一共 30 篇左右
+NOTHING = re.compile(r"无|没有|暂无|不知道|不清楚|不确定|none", re.I)
 
 
 UNIT = r"(?:元|块钱?|毛|rmb|¥|￥|g|克|kg|千克|公斤|斤|ml|毫升|l|升|oz|片|粒|颗|支|瓶|盒|包|袋|条|抽|只|个|枚|件|寸|cm|mm|米|瓦|w|mah|小时|分钟|天|折|%)"
@@ -944,18 +1017,35 @@ def spec_only(point):
     return len(re.sub(r"[一每仅才约起只就装/]|%s" % UNIT, "", rest, flags=re.I)) < 2
 
 
-def search_words(sells, aud):
-    """档案里的卖点和人群 → 适合放进搜索框的短词。
-    只有价格或规格的卖点不拿来搜，带数字的排到后面；人群描述太长时只取里面的人群词（「每天敲键盘的打工人」→「打工人」）。"""
+def short_point(s, c=""):
+    """卖点原话 → 放进搜索框的词。6 个字以内原样用；更长的取「的」或逗号前后第一段够短的（「雨后森林的味道」→「雨后森林」），取不出来就用原话。"""
+    s = s.strip()
+    if C.xhs_len(s) <= 6:
+        return s
+    for part in re.split(r"[的，,、；;。\s]+", s):
+        if 2 <= C.xhs_len(part) <= 6 and re.search("[一-鿿]{2}", part) and part not in c and not (c and c in part):
+            return part
+    return s
+
+
+def search_words(sells, aud, c=""):
+    """档案里的卖点和人群 → 适合放进搜索框的短词。返回 (卖点词, 人群词, 搜不了的卖点)。
+    只有价格或规格的卖点不拿来搜，带数字的排到后面，太长的取前半句；
+    人群描述太长时取里面的人群词，中心词（一般在最后）排第一（「租房独居的上班族」→ 上班族、租房、独居）。"""
+    skipped = [s for s in sells if spec_only(s)]
     sells = [s for s in sells if not spec_only(s)]
     sells = [s for s in sells if not re.search(r"\d", s)] + [s for s in sells if re.search(r"\d", s)]
-    short = []
+    words, short = [], []
+    for s in sells:
+        w = short_point(s, c)
+        if w not in words:
+            words.append(w)
     for x in aud:
         m = re.findall(PERSONA, x)
-        x = x if len(x) <= 6 else (m[-1] if m else "")       # 人群词一般在最后：「租房独居的上班族」→「上班族」
-        if x and x not in short:
-            short.append(x)
-    return sells, short
+        for w in ([x] if len(x) <= 6 else m[::-1][:1] + m[:-1]):
+            if w and w not in short:
+                short.append(w)
+    return words, short, skipped
 
 
 def cmd_keywords(a):
@@ -964,11 +1054,14 @@ def cmd_keywords(a):
     if not c:
         sys.exit("还不知道品类。加上 --category \"品类\"，或者先建档（建档后不用再写品类和卖点）：%s" % C.cmd(
             "launch_log.py", "init", "--product", '"产品名"', "--category", '"品类"', "--audience", '"目标人群"', "--selling-points", '"卖点1,卖点2"', "--goal", "互动"))
+    facts = prod.get("facts") or {}
+    known = lambda k: [x for x in split(facts.get(k)) if not NOTHING.fullmatch(x)]      # 档案里的可选事实：常见吐槽、竞品
     from_profile = [name for name, flag, v in (("品类", a.category, prod.get("category")), ("卖点", a.selling_points, prod.get("selling_points")),
-                                               ("人群", a.audience, prod.get("audience"))) if not flag and v]
-    pains, comps = split(a.pains), split(a.competitors)
-    sells, aud = search_words(split(a.selling_points) or list(prod.get("selling_points") or []), split(a.audience) or split(prod.get("audience")))
+                                               ("人群", a.audience, prod.get("audience")), ("痛点", a.pains, known("常见吐槽")), ("竞品", a.competitors, known("竞品"))) if not flag and v]
+    pains, comps = split(a.pains) or known("常见吐槽"), split(a.competitors) or known("竞品")
+    sells, aud, no_search = search_words(split(a.selling_points) or list(prod.get("selling_points") or []), split(a.audience) or split(prod.get("audience")), c)
     a.product = a.product or prod.get("name")
+    left = []
     if a.full:
         G = [("品类基础（看整体供给）", [c + " 推荐", c + " 测评", c + " 怎么选"]),
              ("反面（看真实痛点）", [c + " 避雷", c + " 踩坑", c + " 缺点", c + " 后悔"]),
@@ -980,10 +1073,14 @@ def cmd_keywords(a):
              ("痛点直搜（验证缺口）", ["%s %s" % (c, p) for p in pains[:4]]),
              ("自家产品（已有口碑）", [a.product, a.product + " 真实测评"] if a.product and a.launched else [])]
     else:
-        G = [("必搜", [c + " 推荐", c + " 测评", c + " 避雷"] + ["%s %s" % (c, s) for s in sells[:1]]),
-             ("有的话再搜", ["%s %s" % (c, p) for p in pains[:2]] + ["%s %s" % (x, c) for x in aud[:1]] + [x + " 测评" for x in comps[:1]])]
-        if len(G[1][1]) < 2:
+        must = [c + " 推荐", c + " 测评", c + " 避雷"] + ["%s %s" % (c, s) for s in sells[:1]]
+        if len(must) < MUST_TERMS:
+            must.append(c + " 怎么选")
+        G = [("必搜（%d 个）" % len(must), must),
+             ("时间够再搜（可选）", ["%s %s" % (c, s) for s in sells[1:2]] + ["%s %s" % (c, p) for p in pains[:3]] + ["%s %s" % (x, c) for x in aud[:2]] + [x + " 测评" for x in comps[:1]])]
+        if not G[1][1]:
             G[1][1].append(c + " 缺点")
+        left = [(name, xs) for name, xs in (("卖点", sells[2:]), ("痛点", pains[3:]), ("人群", aud[2:]), ("竞品", comps[1:])) if xs]
     print("# 搜索词：%s%s\n" % (c, "（完整矩阵）" if a.full else ""))
     if from_profile:
         print("%s取自产品档案。\n" % "、".join(from_profile))
@@ -997,15 +1094,32 @@ def cmd_keywords(a):
             n += 1
             print("%d. %s" % (n, k))
         print()
+    notes = []
+    if no_search:
+        notes.append("卖点「%s」只有价格或规格，搜不出同类笔记，没有拿来搜" % "」「".join(no_search))
+    long = [s for s in sells[:2] if C.xhs_len(s) > 8]
+    if long and not a.full:
+        notes.append("卖点「%s」原话偏长，搜的时候可以只留核心的几个字" % "」「".join(long))
+    if left:
+        notes.append("没有排进去的：%s。想搜就照「品类 + 词」自己加" % "；".join("%s「%s」" % (name, "」「".join(xs)) for name, xs in left))
+    if notes:
+        print("说明：%s。\n" % "；".join(notes))
     if a.full:
-        print("完整矩阵适合有搜索工具、能自动抓取的时候用。手动搜索选其中 6 到 8 个就够。")
+        print("完整矩阵适合有搜索工具、能自动抓取的时候用。手动搜索用不带 --full 的那一份：%d 个必搜词就够。" % MUST_TERMS)
     else:
-        print("用法：每个词看「综合」排序的前 10 篇就够，总量 30 篇左右。手动搜的话，把搜索结果页直接全选复制成文本，或者截图发给我都可以。")
-        print("每个词的结果存成一个文件，运行：%s" % C.cmd("research.py", "add", "文件", "--keyword", '"搜索词"'))
+        print("工作量：必搜的 %d 个词，每个看「综合」排序的前 %d 篇，一共 %d 篇左右，最少 %d 篇。可选的词每搜一个多看 %d 篇左右，不搜也能分析。" % (
+            MUST_TERMS, TOP_PER_TERM, MUST_TERMS * TOP_PER_TERM // 10 * 10, MIN_NOTES, TOP_PER_TERM))
+        print("结果怎么带回来：")
+        print("- 电脑网页版（浏览器打开 xiaohongshu.com）：在搜索结果页全选、复制，整段粘贴过来，不用整理。")
+        print("- 手机 App：搜索结果页一般选不了字，截图发过来，由助手照着图转写成每行一篇（标题 | 作者 昵称 | 赞 数字）。")
+        print("这样带回来的每篇只有标题、作者和点赞数，够看撞卖点、角度分布和标题写法；没有粉丝数，所以认不出低粉爆款，各种倍数也没法按账号大小校正，只能当线索。")
+        print("每个词的结果由助手存成一个文件，放在 %s 里，再入库：" % C.where(C.P(a, "inbox")))
+        print("  %s" % C.cmd("research.py", "add", "文件", "--keyword", '"搜索词"'))
+        print("还要评论：从搜到的笔记里挑 2 到 3 篇评论多的，把评论区一起带回来，一共 %d 条以上，并记下每篇笔记作者的昵称。没有评论也能分析，只是少了「需求缺口」这一节。评论的命令在入库之后给出。" % ci.MIN_COMMENTS)
         print("想要更全的搜索词（有自动搜索工具时）加 --full。")
     miss = [x for x, v in (("--selling-points", sells), ("--pains", pains), ("--audience", aud), ("--competitors", comps)) if not v]
     if miss:
-        print("\n提示：补充 %s 可以得到更贴近产品的搜索词。" % " ".join(miss))
+        print("\n提示：补充 %s 可以得到更贴近产品的搜索词。用户不知道竞品或痛点的话不用追问，搜完「避雷」那个词自然就有了。" % " ".join(miss))
 
 
 def cmd_add(a):
@@ -1042,14 +1156,18 @@ def cmd_add(a):
     save_corpus(path, merged)
     print("语料库 %d → %d 篇%s。保存在 %s" % (len(old), len(merged), ("（合并重复 %d 篇）" % dup) if dup else "", C.where(path)))
     print("请核对上面的篇数和前几条：%s篇数不对或标题、作者错位时，把内容整理成每行一篇后运行 %s" % ("有 ⚠️ 时尤其要看。" if any_warn else "", C.cmd("research.py", "add", "文件", "--replace")))
+    prod = (C.read_json(C.log_path(a)) or {}).get("product") or {}
+    steps = []
     if len(merged) < MIN_NOTES:
-        print("当前不足 %d 篇，再搜两三个词补充后再 analyze；现在分析只能当线索。" % MIN_NOTES)
-    else:
-        prod = (C.read_json(C.log_path(a)) or {}).get("product") or {}
-        if prod.get("selling_points"):
-            print("下一步（品类和卖点自动取自产品档案）：%s" % C.cmd("research.py", "analyze"))
-        else:
-            print("下一步：%s" % C.cmd("research.py", "analyze", "--topic", '"品类"', "--selling-terms", '"卖点=别的说法1/别的说法2"'))
+        steps.append("笔记还差 %d 篇到 %d 篇：再搜一两个词入库。现在就分析的话，结果只能当线索。" % (MIN_NOTES - len(merged), MIN_NOTES))
+    if not os.path.exists(C.P(a, "research", "insight.json")):
+        steps.append("评论还没有：挑 2 到 3 篇评论多的笔记，把评论区存成文件（一共 %d 条以上），作者的昵称各写一个 --author。没有评论就没有「需求缺口」这一节：\n   %s"
+                     % (ci.MIN_COMMENTS, C.cmd("comment_insight.py", "评论文件", "--research", "--author", '"作者昵称"')))
+    steps.append("分析%s：\n   %s" % ("（品类和卖点自动取自产品档案）" if prod.get("selling_points") else "", C.cmd("research.py", "analyze") if prod.get("selling_points")
+                                   else C.cmd("research.py", "analyze", "--topic", '"品类"', "--selling-terms", '"卖点=别的说法1/别的说法2"')))
+    print("下一步：")
+    for i, s in enumerate(steps, 1):
+        print("%d. %s" % (i, s))
 
 
 def cmd_status(a):
@@ -1082,6 +1200,8 @@ def cmd_analyze(a):
     R = analyze(notes, a.days, a.top, insight, terms, lex)
     if R is None:
         sys.exit("时间窗内没有笔记，请加大 --days 或用 --days 0 关闭时间窗。")
+    launches = (C.read_json(C.log_path(a)) or {}).get("launches") or []
+    R["no_comparator"] = not any(l.get("metrics") for l in launches)       # 还没有一篇有数据的发布：假设暂时没有对照
     md = to_markdown(R, topic)
     stem = os.path.splitext(os.path.basename(path))[0]
     base = os.path.dirname(os.path.abspath(path))

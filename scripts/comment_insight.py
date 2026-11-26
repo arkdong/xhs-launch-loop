@@ -45,6 +45,7 @@ NEG_PRE = (r"(?:不|没有?|无|未|(?<![特区分个告性级类差识鉴辨])�
 IMPER = r"(?:(?<![特区分个告性级类差识鉴辨])别|甭|不要|勿)(再|又|老是?|总是?|一直)?(?:太|那么|这么)?$"
 POST_STRONG = r"(?:死了?|爆了?|炸了?|哭了?|麻了|吐了|到不行|得不行|得很|得要命|得要死|得离谱|到离谱|得慌|得一批|到爆|到哭|得不得了|极了|透了|疯了)"
 POST_DE = r"得(?!有道理|有理由|值|其所|刚好|刚刚好|恰到好处|合理|体|当)."      # 苦得像中药、卡得想砸手机：带补语，算吐槽；贵得有道理不算
+POST_DAO = r"到(?!位|货|手|家|底|处|现在|目前|时候)."                             # 黏到怀疑人生、贵到肉疼：同上
 POST_WEAK = r"(?:了|啊|呀|哦|吧|呢|嘛|吗|么|诶|哈|啦|哇|点|些|一点)*"
 WEAK_PRE = r"(?:这个?|这款|它|那个?|东西|产品|这东西|这玩意)?"
 POST_NEG = r"(?:几乎|基本|完全|其实|倒是|倒|也|都|并)?(?:不大|不明显|很小|不严重|还好|能接受|可以接受|不算|不存在|没有|不多|很少|不怎么|不太)"
@@ -61,10 +62,29 @@ CONCERN = re.compile(r"听说|据说|(?<![可哪害恐])怕|担心|不知道|想
 # 「求平价的」「想找不油的」是在要东西，后面跟着的好评词不算夸；「求求别涨价」「要求」「追求」不算
 SEEK = re.compile(r"求(?:推荐|安利|链接|教程|分享|同款|地址|店|出|带|问|助|科普|避雷|解答|告知)|有[^，。]{0,10}(?:推荐|平替|同款|类似|替代)吗?|推荐(?:一下|下|个|几个|点|些)|能推荐|有推荐|求一个|跪求|在线等|蹲蹲|蹲一个"
                   r"|(?<![要请追需寻谋祈乞恳哀苛讲力强征渴应求])求(?![求你您别不放改生职婚学之人己])|想找|在找")
+# 「希望出小包装，出差带着方便」「建议出个拿铁味，肯定好喝」：说的是想要的东西，后面的好评词不算在夸现在的产品
+WISH = re.compile(r"希望(?:能|可以|有|出|加|增加|推出|以后|下次|后续|改|优化)|建议(?:官方|品牌|商家|店家|你们)?(?:出|加|做|改|增|优化|推出|上架|换)|(?:要是|如果)(?:能|有|出)|求出|能不能(?:出|加|做)|什么时候出|出(?:个|一个|一款)(?!门|差|事)")
+# 「耳挂式的更舒服吧」「另一款应该更好吧」：在猜别的东西更好，不是在夸
+GUESS = re.compile(r"更[^，。！？!?]{1,6}吧$")
 TAI_OK = re.compile(r"^(?:[好有可想爱喜会懂棒赞美帅酷香萌强牛绝值顶稳准全妙神真像巧搞逗]|需要|及时|幸福|治愈|解压|上头|心动|感动|惊喜|惊艳|满意|开心|快乐|高级|漂亮|精致|温柔|丝滑|清爽|方便|舒服|划算|便宜|实用|厉害|优秀|贴心|良心|详细|用心|走心)")
-CLAUSE = re.compile(r"([，,。！!？?~～…；;\n]+|\s+)")
+CLAUSE = re.compile(r"([，,。！!？?~～…；;｜|\n]+|\s+)")
+KINDS = ("neg", "pos", "good", "topic")
 ORDER = "CQPM"   # 一条评论对一个维度只算一种态度：吐槽 > 疑问 > 好评 > 提及
 TRUST = "信任与真实性"   # 这个维度的吐槽单独算「质疑广告」，不算产品痛点
+
+
+def _clauses(m, t):
+    """按标点和空白把一条评论切成分句：[(遮掉品名的分句, 分隔符, 原文分句)]。m 和 t 等长。
+    数字、字母旁边的空格不切：「到手 59 值不值」「AirPods Pro」说的是一件事。"""
+    out, last = [], 0
+    for x in CLAUSE.finditer(t):
+        a, b = x.span()
+        if not x.group(0).strip(" \t") and ((a and t[a - 1].isascii() and t[a - 1].isalnum()) or (b < len(t) and t[b].isascii() and t[b].isalnum())):
+            continue
+        out.append((m[last:a], x.group(0), t[last:a]))
+        last = b
+    out.append((m[last:], "", t[last:]))
+    return out
 
 
 def _rx(term):
@@ -102,23 +122,84 @@ def load_stopwords():
 
 
 def _merge_lex(base, extra, src):
-    """把项目词表并进通用词表（格式见 references/feedback.md）。返回改动的词数。"""
-    n = 0
+    """把项目词表并进通用词表（格式见 references/feedback.md 第 5 节）。项目词表优先：
+    remove 只删通用词表里的词；项目词表放进某个维度的词，通用词表不再把它算到别的维度。
+    返回 (改动的词数, 给用户看的说明, {(维度, 类别): [项目词表加的词]})。"""
+    n, notes, added, moved = 0, [], defaultdict(list), OrderedDict()
+    generic = list(base["aspects"])
     asp = extra.get("aspects") or {}
     if not isinstance(asp, dict):
         sys.exit("词表 %s 里的 aspects 应该是 {\"维度名\": {\"neg\": [...], \"pos\": [...]}} 这样的对象。" % src)
+    gone = [w for w in extra.get("remove") or [] if isinstance(w, str) and w]
+    if gone:   # 通用词表里在这个品类会误判的词。先删，再加项目词，所以删不到项目词表自己加的词
+        hit, gs = [], set(gone)
+
+        def drop(lst):
+            hit.extend(w for w in lst if w in gs)
+            return [w for w in lst if w not in gs]
+
+        for d in base["aspects"].values():
+            for k in KINDS:
+                d[k] = drop(d[k])
+            for k in ("adj", "too"):
+                d[k] = "".join(drop(list(d[k])))
+        for k in ("positive", "negative"):
+            base[k] = drop(base[k])
+        for grp in (base["intents"], base["spam"]):
+            for name in grp:
+                grp[name] = drop(grp[name])
+        hit = list(OrderedDict.fromkeys(hit))
+        n += len(hit)
+        if hit:
+            notes.append("remove 去掉了通用词表里的 %d 个词：%s%s。" % (len(hit), "、".join(hit[:8]), "…" if len(hit) > 8 else ""))
+        miss = [w for w in gone if w not in hit]
+        if miss:
+            notes.append("remove 里的 %s 不是通用词表里的词条，没有起作用。想让这种说法换个维度，把词写进 aspects 里你要的那个维度就行。" % "、".join("「%s」" % w for w in miss[:8]))
     for name, d in asp.items():
         if not isinstance(d, dict):
             sys.exit("词表 %s 里 aspects.%s 应该是 {\"neg\": [...], \"pos\": [...], \"topic\": [...]} 这样的对象。" % (src, name))
         tgt = base["aspects"].setdefault(name, {"neg": [], "pos": [], "good": [], "topic": [], "adj": "", "too": ""})
-        for k in ("neg", "pos", "good", "topic"):
-            add = [w for w in d.get(k) or [] if isinstance(w, str) and w and w not in tgt[k]]
-            tgt[k] = tgt[k] + add
-            n += len(add)
+        for k in KINDS:
+            for w in d.get(k) or []:
+                if not (isinstance(w, str) and w):
+                    continue
+                if not w.startswith("re:"):
+                    for other, od in base["aspects"].items():          # 同一个词在通用词表的别处也有：以项目词表为准
+                        for k2 in KINDS:
+                            if w in od[k2] and (other, k2) != (name, k):
+                                od[k2] = [x for x in od[k2] if x != w]
+                                if other != name:
+                                    moved.setdefault(w, other)
+                    base["mask"] = [x for x in base["mask"] if x not in w]   # 通用词表会先遮掉的词（充电盒），项目词表要用就不遮
+                if w not in tgt[k]:
+                    tgt[k] = tgt[k] + [w]
+                    added[(name, k)].append(w)
+                    n += 1
         for k in ("adj", "too"):
-            add = "".join(ch for ch in "".join(d.get(k) or "") if ch not in tgt[k])
-            tgt[k] += add
-            n += len(add)
+            for ch in "".join(d.get(k) or ""):
+                for other, od in base["aspects"].items():
+                    for k2 in ("adj", "too"):
+                        if ch in od[k2] and (other, k2) != (name, k):
+                            od[k2] = od[k2].replace(ch, "")
+                            if other != name:
+                                moved.setdefault(ch, other)
+                if ch not in tgt[k]:
+                    tgt[k] += ch
+                    n += 1
+    if moved:
+        notes.append("项目词表优先：%s%s原来在通用词表的别的维度里，现在按项目词表归类。通用规则命中的说法里带着项目词的（比如「续航不行」里的「续航」），也跟着归过去。"
+                     % ("、".join("「%s」（原属%s）" % kv for kv in list(moved.items())[:6]), "等 %d 个词" % len(moved) if len(moved) > 6 else ""))
+    # 新建的维度和通用维度名字相近（佩戴 / 佩戴与舒适）：会分成两行统计，提醒一下
+    near = OrderedDict()
+    grams = lambda x: set(part[i:i + 2] for part in x.split("与") for i in range(len(part) - 1))
+    for name in asp:
+        if name not in generic:
+            hit = [g for g in generic if grams(name) & grams(g)]
+            if hit:
+                near[name] = hit[0]
+    if near:
+        notes.append("新建的维度%s和通用维度%s名字相近，会分成两行统计。想合在一起，就把词写到通用维度的名字下面。"
+                     % ("、".join("「%s」" % k for k in near), "、".join("「%s」" % v for v in OrderedDict.fromkeys(near.values()))))
     for name, ws in (extra.get("intents") or {}).items():
         tgt = base["intents"].setdefault(name, [])
         add = [w for w in ws if isinstance(w, str) and w and w not in tgt]
@@ -134,23 +215,7 @@ def _merge_lex(base, extra, src):
         add = [w for w in extra.get(k) or [] if isinstance(w, str) and w and w not in base[k]]
         base[k] = base[k] + add
         n += len(add)
-    gone = set(w for w in extra.get("remove") or [] if isinstance(w, str))
-    if gone:   # 通用词表里在这个品类会误判的词
-        for d in base["aspects"].values():
-            for k in ("neg", "pos", "good", "topic"):
-                n += len([w for w in d[k] if w in gone])
-                d[k] = [w for w in d[k] if w not in gone]
-            for k in ("adj", "too"):
-                n += len([ch for ch in d[k] if ch in gone])
-                d[k] = "".join(ch for ch in d[k] if ch not in gone)
-        for k in ("positive", "negative"):
-            n += len([w for w in base[k] if w in gone])
-            base[k] = [w for w in base[k] if w not in gone]
-        for grp in (base["intents"], base["spam"]):
-            for name in grp:
-                n += len([w for w in grp[name] if w in gone])
-                grp[name] = [w for w in grp[name] if w not in gone]
-    return n
+    return n, notes, added
 
 
 class Lexicon:
@@ -162,13 +227,18 @@ class Lexicon:
         self.raw = {"aspects": OrderedDict((k, dict(v)) for k, v in pl.items() if not k.startswith("_")),
                     "intents": OrderedDict((k, list(v)) for k, v in il["intents"].items()), "positive": list(il["positive"]),
                     "negative": list(il["negative"]), "mask": list(il["mask"]), "spam": OrderedDict((k, list(v)) for k, v in il["spam"].items())}
-        self.loaded = []
+        self.loaded, self.notes, proj = [], [], defaultdict(list)
         for p in extra_paths:
             if p and os.path.exists(p):
                 extra = C.read_json(p)
                 if not isinstance(extra, dict):
                     sys.exit("词表 %s 应该是一个 JSON 对象。" % C.where(p))
-                self.loaded.append((p, _merge_lex(self.raw, extra, p)))
+                n, notes, added = _merge_lex(self.raw, extra, p)
+                self.loaded.append((p, n))
+                self.notes += notes
+                for k, v in added.items():
+                    proj[k] += v
+        self.proj = [(name, rx) for (name, _), rx in ((k, _compile(v)) for k, v in proj.items()) if rx]     # 项目词表加的词，按维度
         r = self.raw
         self.mask = _compile(r["mask"])
         self.intents = OrderedDict((k, _compile(v)) for k, v in r["intents"].items())
@@ -176,10 +246,19 @@ class Lexicon:
         self.spam = OrderedDict((k, _compile(v)) for k, v in r["spam"].items())
         self.aspects = OrderedDict()
         for name, d in r["aspects"].items():
-            self.aspects[name] = {k: _compile(d.get(k) or []) for k in ("neg", "pos", "good", "topic")}
+            self.aspects[name] = {k: _compile(d.get(k) or []) for k in KINDS}
             self.aspects[name].update(adj=set(d.get("adj") or ""), too=set(d.get("too") or ""))
         self.adj_of = {ch: name for name, a in self.aspects.items() for ch in a["adj"]}
         self.too_of = {ch: name for name, a in self.aspects.items() for ch in a["too"]}
+
+    @staticmethod
+    def _home(name, s, e, mine):
+        """项目词表优先：通用规则命中的片段和项目词表命中的片段重叠时，归到项目词表的那个维度
+        （「续航不行」「老是断连」→ 项目词表里「续航」「断连」所在的维度）。"""
+        if any(a == s and b == e and d == name for a, b, d in mine):
+            return name                                   # 这一段本来就是项目词表在这个维度命中的
+        over = [(min(e, b) - max(s, a), b - a, d) for a, b, d in mine if a < e and s < b and d != name]
+        return max(over)[2] if over else name
 
     # ----- 单条评论 -----
     def spam_kind(self, text):
@@ -194,12 +273,12 @@ class Lexicon:
         t = text.lower()
         m = self.mask.sub(lambda x: MASK_CH * len(x.group(0)), t) if self.mask else t
         found, loose = OrderedDict(), []
-        g_c = g_p = asked = False
-        parts, raws = CLAUSE.split(m) + [""], CLAUSE.split(t) + [""]
-        for i in range(0, len(parts) - 1, 2):
-            c, delim, raw = parts[i], parts[i + 1], raws[i]
+        g_c = g_p = asked = wish = False
+        for c, delim, raw in _clauses(m, t):
             if not c:
                 continue
+            c0 = c
+            wish = wish or bool(WISH.search(raw))
             anot = False
             for rx, rep in A_NOT_A:
                 c2 = rx.sub(rep, c)
@@ -208,20 +287,24 @@ class Lexicon:
             rh = bool(RHETORIC.search(raw))
             mark = "?" in delim or "？" in delim
             if anot and not mark and A_NOT_A_STMT.search(raw):
-                anot, c = False, parts[i]
+                anot, c = False, c0
                 for rx, _ in A_NOT_A:                          # 整个「X不X」遮掉，免得里面的词被当成好评或吐槽
                     c = rx.sub(lambda x: MASK_CH * len(x.group(0)), c)
             q_word = anot or bool(Q_WORD.search(Q_STRIP.sub("", raw)))
             res, excess, tai = self._clause(c, (q_word or mark) and not rh)
             q = (q_word or (mark and not excess)) and not rh
             asked = asked or q
-            soft = q or bool(SEEK.search(raw)) or bool(CONCERN.search(raw))
+            unsure = q or bool(SEEK.search(raw)) or bool(CONCERN.search(raw)) or bool(GUESS.search(raw))
+            soft = unsure or wish
+            if re.search(r"[。！!？?\n]", delim):       # 一句话说完了，后面的话不再算在「希望…」里面
+                wish = False
             for name, (pol, words) in res.items():
                 if name is None:
                     if not soft:
                         g_c, g_p = g_c or pol == "C", g_p or pol == "P"
                     continue
-                lab = "Q" if (soft and pol != "M") or (q and pol == "M") else pol
+                # 在问、在担心的：算疑问。只是在许愿的（希望出小包装，出差带着方便）：里面的好话只算提到，不算好评也不算疑问
+                lab = "Q" if (unsure and pol != "M") or (q and pol == "M") or (wish and pol == "C") else "M" if wish and pol == "P" else pol
                 found.setdefault(name, {}).setdefault(lab, []).extend(words)
             if not soft:
                 loose += tai
@@ -246,10 +329,12 @@ class Lexicon:
     def _clause(self, c, asking=False):
         """一个分句里的命中。返回 ({维度或 None: (态度, [词])}, 有没有「太…了」这类过量表达, 没归入维度的过量词)"""
         hits = []   # (start, end, 维度, 类别, 词)
+        mine = [(x.start(), x.end(), name) for name, rx in self.proj for x in rx.finditer(c) if x.end() - x.start() >= 2]   # 项目词表命中的片段
         for name, a in self.aspects.items():
-            for kind in ("neg", "pos", "good", "topic"):
+            for kind in KINDS:
                 if a[kind]:
-                    hits += [(x.start(), x.end(), name, kind, x.group(0)) for x in a[kind].finditer(c) if x.end() > x.start()]
+                    hits += [(x.start(), x.end(), self._home(name, x.start(), x.end(), mine) if mine else name, kind, x.group(0))
+                             for x in a[kind].finditer(c) if x.end() > x.start()]
         for kind, rx in (("neg", self.neg), ("pos", self.pos)):
             if rx:
                 hits += [(x.start(), x.end(), None, kind, x.group(0)) for x in rx.finditer(c) if x.end() > x.start()]
@@ -327,8 +412,8 @@ class Lexicon:
                     put(owner(i, own), "P", "不" + ch)
                 elif deg and deg.group(0) in ("最", "更") and post.startswith("的"):
                     continue                                         # 最贵的那款：只是在指代
-                elif (deg or re.search(LIC, pre) or i in topic_ends or re.match(POST_STRONG, post) or re.match(POST_DE, post) or pre.endswith(ch) or bare
-                      or re.match(r"了(?:点|些|一点|一丢丢)", post)):
+                elif (deg or re.search(LIC, pre) or i in topic_ends or re.match(POST_STRONG, post) or re.match(POST_DE, post) or re.match(POST_DAO, post)
+                      or pre.endswith(ch) or bare or re.match(r"了(?:点|些|一点|一丢丢)", post)):
                     if re.match(POST_NEG, post):
                         put(owner(i, own), "P", "不" + ch)
                     else:
@@ -374,11 +459,22 @@ TAGS = {"作者": "author", "置顶评论": "pinned", "置顶": "pinned", "作�
 LIKE_KW = re.compile(r"^(?:赞|点赞|喜欢|[♡❤♥👍]️?)\s*[:：]?\s*(%s)?$|^(%s)\s*(?:赞|点赞)$" % (C.COUNT, C.COUNT))
 REPLY_KW = re.compile(r"^(?:回复|评论)\s*(?:%s)?$|^(?:%s)\s*(?:条)?回复$" % (C.COUNT, C.COUNT))
 NUM_ONLY = re.compile(r"^%s$" % C.COUNT)
+HEAD_N = re.compile(r"^共\s*(\d+)\s*条评论$")                               # 评论区顶上的总数（含回复）
+FOLD_N = re.compile(r"^(?:展开|查看|查看全部)\s*(\d+)\s*条回复$")              # 没展开的回复
+REPLY_TO = re.compile(r"^\s*回复\s*@?([^:：\s]{1,20})\s*[:：]")
+EMOJI = re.compile(r"\[[^\]\s]{1,8}R?\]")
+
+
+def _names(author):
+    """--author 可以给多个昵称（几篇笔记的评论放在一起时，每篇的作者各给一次）。"""
+    if isinstance(author, str):
+        author = [author]
+    return set(x.strip() for x in author or [] if x and x.strip())
 
 
 def clean(t):
     """去掉表情代码、@、回复前缀、行尾的时间属地。"""
-    t = re.sub(r"\[[^\]\s]{1,8}R?\]", "", str(t))
+    t = EMOJI.sub("", str(t))
     t = re.sub(r"^\s*回复\s*@?[^:：\s]{1,20}\s*[:：]\s*", "", t)
     t = re.sub(r"@[^\s@，,。:：]{1,20}", " ", t)
     t = DATE_INLINE.sub("", " " + t)
@@ -399,7 +495,7 @@ def _block(lines, with_user, author):
         m = re.fullmatch(r"(.+?)\s+作者", user)
         if m:
             user, flags = m.group(1), flags | {"author"}
-    if author and user and user.strip() == author.strip():
+    if user and user.strip() in _names(author):
         flags.add("author")
     return {"text": " ".join(texts), "user": user, "likes": 0, "author": "author" in flags, "lines": len(texts)}
 
@@ -500,7 +596,7 @@ def _from_json(data, out, author, as_comments=True):
             name = C.pick(user, ["nickname", "name", "nick_name"]) if isinstance(user, dict) else (user if isinstance(user, str) else "")
             name = name or C.pick(it, USER_KEYS[:-2]) or ""
             tags = it.get("show_tags") or []
-            is_author = bool(it.get("is_author")) or "is_author" in tags or bool(author and name == author)
+            is_author = bool(it.get("is_author")) or "is_author" in tags or str(name).strip() in _names(author)
             text = C.pick(it, TEXT_KEYS)
             out.append({"text": "" if text is None else str(text), "user": str(name), "likes": C.num(C.pick(it, LIKE_KEYS)) or 0, "author": is_author})
         for k in COMMENT_LISTS:
@@ -515,7 +611,7 @@ def read_comments(path, author=""):
     """读一个评论文件，返回 (评论 dict 列表, 说明)。"""
     text, enc = C.read_text(path)
     ext = os.path.splitext(path)[1].lower()
-    info = {"format": "", "warnings": [], "encoding": enc}
+    info = {"format": "", "warnings": [], "notes": [], "encoding": enc}
     out = []
     if ext in (".json", ".jsonl"):
         try:
@@ -530,7 +626,7 @@ def read_comments(path, author=""):
             for r in rows:
                 name = str(C.pick(r, USER_KEYS) or "")
                 out.append({"text": str(C.pick(r, TEXT_KEYS) or ""), "user": name, "likes": C.num(C.pick(r, LIKE_KEYS)) or 0,
-                            "author": bool(author and name == author) or str(C.pick(r, ["是否作者", "is_author"]) or "").strip() in ("是", "1", "true", "True", "作者")})
+                            "author": name.strip() in _names(author) or str(C.pick(r, ["是否作者", "is_author"]) or "").strip() in ("是", "1", "true", "True", "作者")})
             info["format"] = "表格（%d 行，评论列：%s）" % (len(rows), next(k for k in rows[0] if k and str(k).strip().lower() in [x.lower() for x in TEXT_KEYS]))
         else:
             if rows or ext in (".csv", ".tsv"):
@@ -539,6 +635,18 @@ def read_comments(path, author=""):
             got = parse_blocks(lines, author) or parse_lines(lines)
             out, info2 = got
             info.update(format=info2["format"], warnings=info["warnings"] + info2["warnings"])
+            # 页面自己写的总数、没展开的回复：不影响已读到的评论，但读者要知道样本少了哪些
+            heads = [int(HEAD_N.match(l).group(1)) for l in lines if HEAD_N.match(l)]
+            folds = [int(FOLD_N.match(l).group(1)) for l in lines if FOLD_N.match(l)]
+            if heads and sum(heads) > len(out):
+                info["notes"].append("页面上写着共 %d 条评论，这里读到 %d 条，少 %d 条：多半是折叠的回复没有展开，或者没有滑到底。样本以读到的为准；差的这几条要紧的话，展开后重新复制。"
+                                     % (sum(heads), len(out), sum(heads) - len(out)))
+            elif heads and sum(heads) < len(out):
+                info["notes"].append("页面上写着共 %d 条评论，这里读到 %d 条，多出 %d 条：可能有重复粘贴，或者把别的文字读成了评论，请对照原文。" % (sum(heads), len(out), len(out) - sum(heads)))
+            elif heads:
+                info["notes"].append("页面上写着共 %d 条评论，和读到的条数一致。" % sum(heads))
+            if folds:
+                info["notes"].append("有 %d 处回复没有展开（共 %d 条），这些回复没有读到。" % (len(folds), sum(folds)))
     if enc != "UTF-8":
         info["format"] += "，编码 %s" % enc
     return out, info
@@ -546,7 +654,8 @@ def read_comments(path, author=""):
 
 def prepare(raw, lex, sources=1):
     """清洗、去重、分出作者回复和无关评论。返回 (有效评论 [(text, likes)], 统计)。"""
-    stat = {"raw": len(raw), "author_replies": [], "spam": defaultdict(list), "no_text": 0, "duplicates": 0}
+    stat = {"raw": len(raw), "author_replies": [], "spam": defaultdict(list), "no_text": 0, "duplicates": 0,
+            "users": [], "replied_to": [], "open_replies": 0}       # users 和返回的有效评论一一对应；replied_to 是作者点名回复过的昵称
     seen, out = set(), []
     for c in raw:
         t = clean(c["text"])
@@ -555,6 +664,11 @@ def prepare(raw, lex, sources=1):
             continue
         if c.get("author"):
             stat["author_replies"].append(t)
+            to = REPLY_TO.match(EMOJI.sub("", str(c["text"])))
+            if to:
+                stat["replied_to"].append(to.group(1).strip())
+            else:
+                stat["open_replies"] += 1
             continue
         key = (c.get("user") or "", t)
         if key in seen and (c.get("user") or len(t) >= 8):   # 同一个人的同一句，或很长的同一句：重复粘贴
@@ -566,6 +680,7 @@ def prepare(raw, lex, sources=1):
             stat["spam"][kind].append(t)
             continue
         out.append((t, c.get("likes") or 0))
+        stat["users"].append((c.get("user") or "").strip())
     return out, stat
 
 
@@ -575,6 +690,8 @@ def keywords(texts, stop, top):
     """无分词依赖的中文关键词：统计 2 到 6 字片段出现在多少条里，去掉停用词和被更长片段覆盖的片段。"""
     df = Counter()
     for t in texts:
+        for rx, rep in A_NOT_A[:2]:      # 「黏不黏」不是在说「不黏」
+            t = rx.sub(rep, t)
         grams = OrderedDict()       # 按出现顺序记，保证次数相同的词每次运行排在同样的位置
         for seg in re.findall(r"[一-鿿]+|[A-Za-z][A-Za-z0-9]+", t):
             if re.match(r"[A-Za-z]", seg):
@@ -617,10 +734,65 @@ def _partial(k, g, least=1):
     return False
 
 
-def analyse(comments, top=15, lex=None, stat=None, parse=None):
-    """comments: [(text, likes)]，已清洗。返回洞察 dict。"""
+DOUBT = re.compile(r"[?？]|吗|真的假的|真有|真能|虚标|哪有|没那么|没有那么|达不到|不到|根本|实际上?|夸张|吹牛|骗")
+BOUGHT = re.compile(r"买|入手|到手|拍的|下单|付了|花了")
+
+
+def _grams(text, quantities=()):
+    """一段话里相邻两个汉字的组合（去掉数字和单位本身），用来判断两句话是不是在说同一件事。"""
+    t = str(text)
+    for q in quantities:
+        t = t.replace(q["raw"], " ")
+    return set(seg[i:i + 2] for seg in re.findall("[%s]+" % CJK, t) for i in range(len(seg) - 1))
+
+
+def claim_checks(claims, author_replies, readers):
+    """档案里带数字的说法，对照作者回复和读者评论里的数字。只管能对的：价格、规格、时长、比例。
+    claims: [(来源, 文字)]；author_replies: [文字]；readers: [(文字, 点赞)]。
+    返回 [{"claim", "source", "numbers", "replies": [{"text", "numbers"}], "readers": [{"text", "likes", "numbers"}]}]，只留对不上或被质疑的。"""
+    out = []
+    for src, claim in claims:
+        qs = [q for q in C.quantities(claim) if q["hard"]]
+        if not qs:
+            continue
+        words = _grams(claim, qs)
+        item = {"claim": str(claim), "source": src, "numbers": [q["raw"] for q in qs], "replies": [], "readers": []}
+
+        def others(text, need_word):
+            """这句话里和档案同一种单位、但数值不同的数字。不是价格的，要求两句话有共同的词（都在说续航），免得把不相干的数字对到一起。"""
+            rq = [q for q in C.quantities(text) if q["hard"]]
+            diff = []
+            for q in qs:
+                same = [x for x in rq if x["unit"] == q["unit"]]
+                if not same or any(C.same_quantity(q, x) for x in same):
+                    continue
+                if (q["unit"] != "元" or need_word) and not (words & _grams(text, rq)) and not (q["unit"] == "元" and BOUGHT.search(text)):
+                    continue
+                diff += [x["raw"] for x in same]
+            return list(OrderedDict.fromkeys(diff)), rq
+
+        for text in author_replies:
+            diff, _ = others(text, False)
+            if diff:
+                item["replies"].append({"text": text, "numbers": diff})
+        for text, likes in readers:
+            diff, rq = others(text, True)
+            quoted = any(C.same_quantity(q, x) for q in qs for x in rq)
+            if diff and not quoted:
+                item["readers"].append({"text": text, "likes": likes, "numbers": diff})
+            elif quoted and DOUBT.search(text):
+                item["readers"].append({"text": text, "likes": likes, "numbers": []})
+        if item["replies"] or item["readers"]:
+            item["readers"].sort(key=lambda x: -x["likes"])
+            out.append(item)
+    return out
+
+
+def analyse(comments, top=15, lex=None, stat=None, parse=None, mode="", claims=None):
+    """comments: [(text, likes)]，已清洗。mode 是 research（别人笔记下的评论）或空（自己笔记下的）。返回洞察 dict。"""
     lex = lex or Lexicon()
     stat = stat or {"raw": len(comments), "author_replies": [], "spam": {}, "no_text": 0, "duplicates": 0}
+    research = mode == "research"
     stop = load_stopwords()
     n = len(comments)
     rows = [(t, likes, lex.analyse(t)) for t, likes in comments]
@@ -654,28 +826,42 @@ def analyse(comments, top=15, lex=None, stat=None, parse=None):
                         "concern": concern, "top_words": [w for w, _ in d["words"].most_common(5)],
                         "complaint_quotes": quotes(d["C"]), "question_quotes": quotes(d["Q"]), "praise_quotes": quotes(d["P"], 2)})
     aspects.sort(key=lambda a: (-a["concern"], -a["complaints"], -a["praises"]))
+    low_conf = bool(parse and parse.get("warnings") and not parse.get("checked"))
+    enough = n >= MIN_COMMENTS and not low_conf
+    weak = "样本不足" if n < MIN_COMMENTS else "解析存疑"
+    # 有效评论满 20 条、解析没有疑点，才给「痛点」「信息没给够」「亮点」这些判断；不然一律是线索
+    for a in aspects:
+        v = ("痛点" if a["complaints"] >= MIN_MENTIONS else "信息没给够" if a["questions"] >= MIN_MENTIONS
+             else "亮点" if a["praises"] >= MIN_MENTIONS and a["praises"] > a["concern"] else "线索")
+        a["verdict"] = v if enough or v == "线索" else "线索（%s）" % weak
     # 兼容旧字段：pain_clusters 只含吐槽
     clusters = OrderedDict()
     for a in sorted(aspects, key=lambda a: -a["complaints"]):
         if a["complaints"]:
-            clusters[a["aspect"]] = {"count": a["complaints"], "share": round(a["complaints"] / n, 3) if n else 0, "enough": a["complaints"] >= MIN_MENTIONS,
+            clusters[a["aspect"]] = {"count": a["complaints"], "share": round(a["complaints"] / n, 3) if n else 0, "enough": enough and a["complaints"] >= MIN_MENTIONS,
                                      "top_words": a["top_words"][:4], "quotes": a["complaint_quotes"]}
     # 问题按主题计数
-    # 一条提问归到它问的那个维度：先看标成疑问的维度；没有就看它提到的别的维度（「续航真有 45 小时吗，我朋友的两天就没电」问的是性能）；都没有才算其他问题
-    q_by, q_other = OrderedDict((a["aspect"], list(asp[a["aspect"]]["Q"])) for a in aspects if a["questions"]), []
+    # 一条提问归到它问的那个维度：先看标成疑问的维度；没有就看它提到的别的维度（「续航真有 45 小时吗，我朋友的两天就没电」问的是续航）；都没有才算其他问题
+    q_by, q_other = OrderedDict((a["aspect"], []) for a in aspects if a["questions"]), []
     for t, likes, r in rows:
-        if "提问" not in r["intents"] or any(lab == "Q" for lab, _ in r["aspects"].values()):
+        if "提问" not in r["intents"]:                      # 只数提问：「希望出小包装」是建议，不进问题主题
             continue
-        about = [k for k in r["aspects"] if k != TRUST]
+        about = [k for k, (lab, _) in r["aspects"].items() if lab == "Q"] or [k for k in r["aspects"] if k != TRUST]
         for k in about:
             q_by.setdefault(k, []).append((likes, t))
         if not about:
             q_other.append((likes, t))
+    q_by = OrderedDict((k, v) for k, v in q_by.items() if v)
     qtopics = [{"topic": k, "count": len(v), "examples": quotes(v, 2)} for k, v in q_by.items()]
     if q_other:
         qtopics.append({"topic": "其他问题", "count": len(q_other), "examples": quotes(q_other, 2)})
     qtopics.sort(key=lambda x: (x["topic"] == "其他问题", -x["count"]))
-    all_q = sorted(((likes, t) for t, likes, r in rows if "提问" in r["intents"]), key=lambda x: -x[0])
+    # 作者点名回复过的人（「回复 昵称：…」）提的问题算已经回复；别人笔记下的评论不分这个
+    users = list(stat.get("users") or []) + [""] * n
+    replied = set() if research else set(stat.get("replied_to") or [])
+    all_q = sorted(((likes, t, users[i]) for i, (t, likes, r) in enumerate(rows) if "提问" in r["intents"]), key=lambda x: -x[0])
+    open_q = [t for _, t, u in all_q if not (u and u in replied)]
+    done_q = [t for _, t, u in all_q if u and u in replied]
 
     def share(k):
         return intent_count.get(k, 0) / n if n else 0
@@ -683,48 +869,69 @@ def analyse(comments, top=15, lex=None, stat=None, parse=None):
     def strong(k, th):
         return intent_count.get(k, 0) >= MIN_MENTIONS and share(k) >= th
 
+    checks = claim_checks(claims, stat["author_replies"], comments) if claims and not research else []
+    tail = "" if enough else "（%s，先当线索）" % weak
     actions = []
     if strong("购买意向", 0.15):
-        actions.append("购买意向 %d 条：在首评或正文末尾补充购买方式，并准备一篇「怎么选 / 怎么买」的跟进笔记。" % intent_count["购买意向"])
+        actions.append(("购买意向 %d 条：读者想买。你的笔记要在首评或正文末尾把购买方式写清楚。" if research else
+                        "购买意向 %d 条：在首评或正文末尾补充购买方式，并准备一篇「怎么选 / 怎么买」的跟进笔记。") % intent_count["购买意向"])
     if strong("提问", 0.25):
-        actions.append("提问 %d 条：按上面的「问题主题」整理一篇答疑笔记，并在 24 小时内逐条回复。" % intent_count["提问"])
+        if research:
+            actions.append("提问 %d 条：这些是读者在原笔记里没找到的信息（见「问题主题」）。你的笔记可以在标题、正文或首评里直接回答，前提是你有真实的答案。" % intent_count["提问"])
+        elif open_q:
+            actions.append("提问 %d 条，其中 %d 条还没看到作者回复（见「问题主题」下面的清单）：先逐条回复；被问得多的主题，在正文或首评里补上，或者整理一篇答疑笔记。" % (intent_count["提问"], len(open_q)))
+        else:
+            actions.append("提问 %d 条，都已经有作者回复：被问得多的主题，在下一篇的正文或首评里提前回答。" % intent_count["提问"])
     if strong("求教程", 0.1):
-        actions.append("求教程 %d 条：下一次发布改用教程体，或出视频版分步演示。" % intent_count["求教程"])
+        actions.append(("求教程 %d 条：这个话题下教程体有需求，可以作为下一篇形式的候选。" if research else "求教程 %d 条：下一次发布改用教程体，或出视频版分步演示。") % intent_count["求教程"])
     if strong("质疑广告", 0.08):
-        actions.append("广告质疑 %d 条：下一篇增加真实使用细节和缺点，减少卖点罗列，并写明你和产品的关系。" % intent_count["质疑广告"])
+        actions.append(("广告质疑 %d 条：读者对这类笔记有戒心。你的笔记要写真实的使用细节和缺点，并写明你和产品的关系。" if research else
+                        "广告质疑 %d 条：下一篇增加真实使用细节和缺点，减少卖点罗列，并写明你和产品的关系。") % intent_count["质疑广告"])
     if strong("建议期待", 0.08):
-        actions.append("用户在提需求（%d 条）：把「建议期待」的原话登记进产品改进清单。" % intent_count["建议期待"])
+        actions.append(("读者在提需求（%d 条，见「用户建议」）：其中你的产品已经做到的，可以作为卖点候选，但要有事实支撑。" if research else
+                        "用户在提需求（%d 条）：把「用户建议」里的原话记进产品改进清单。") % intent_count["建议期待"])
     big = [a for a in aspects if a["complaints"] >= MIN_MENTIONS]
     if big:
         a = big[0]
-        actions.append("最集中的吐槽是「%s」（%d 条）：先判断是产品问题还是预期管理问题，再决定进产品改进清单，还是做下一篇的开头。" % (a["aspect"], a["complaints"]))
+        if not enough:
+            actions.append("「%s」有 %d 条吐槽，但%s：先当线索。看原话是不是在说同一个问题，不要据此定下一篇的角度，也不要据此改产品。"
+                           % (a["aspect"], a["complaints"], "有效评论不到 %d 条" % MIN_COMMENTS if n < MIN_COMMENTS else "解析还有疑点"))
+        elif research:
+            actions.append("吐槽最多的是「%s」（%d 条）：先看原话是不是在说同一个问题。是的话，这是你的笔记可以正面回应的点，前提是你的产品在这一点上有真实的事实。" % (a["aspect"], a["complaints"]))
+        else:
+            actions.append("吐槽最多的是「%s」（%d 条）：先看原话是不是在说同一个问题。是的话，再判断是产品问题还是预期管理问题，决定记进产品改进清单，还是做下一篇的开头。" % (a["aspect"], a["complaints"]))
     else:
         thin = [a for a in aspects if a["complaints"]]
         if thin:
-            actions.append("没有哪个痛点达到 %d 条。「%s」只有 %d 条，只能当线索，不要据此定下一篇的角度。" % (MIN_MENTIONS, thin[0]["aspect"], thin[0]["complaints"]))
+            actions.append("没有哪个维度的吐槽达到 %d 条。「%s」只有 %d 条，只能当线索，不要据此定下一篇的角度。" % (MIN_MENTIONS, thin[0]["aspect"], thin[0]["complaints"]))
     asked = [a for a in aspects if a["questions"] >= MIN_MENTIONS]
     if asked and (not big or asked[0]["aspect"] != big[0]["aspect"]):
-        actions.append("「%s」被问了 %d 次：说明这项信息没给够，在正文或首评里直接回答。" % (asked[0]["aspect"], asked[0]["questions"]))
-    low_conf = bool(parse and parse.get("warnings") and not parse.get("checked"))
+        actions.append(("「%s」被问了 %d 次：原笔记没把这项信息讲清楚，你的笔记可以直接回答%s。" if research else "「%s」被问了 %d 次：说明这项信息没给够，在正文或首评里直接回答%s。")
+                       % (asked[0]["aspect"], asked[0]["questions"], tail))
     if n < MIN_COMMENTS:
         actions.insert(0, "有效评论只有 %d 条，不到 %d 条：以上只能当线索，不能当结论。" % (n, MIN_COMMENTS))
     if low_conf:
         actions.insert(0, "解析有疑点（见报告开头的 ⚠️），请先核对条数，再使用下面的数字。")
+    if checks:
+        actions.insert(0, "档案里的数字在评论区被追问，或者和评论区的数字对不上（见「说法核对」）：先确认数字站得住，再回复评论、写下一篇。")
     un_kw = keywords(unclassified, stop, 8) if len(unclassified) >= 3 else []
     return {
-        "total": n, "sample_sufficient": n >= MIN_COMMENTS and not low_conf,
-        "parse": {"format": (parse or {}).get("format", ""), "warnings": (parse or {}).get("warnings", []), "checked": bool((parse or {}).get("checked")), "raw_entries": stat["raw"],
+        "mode": "research" if research else "own", "total": n, "sample_sufficient": enough,
+        "parse": {"format": (parse or {}).get("format", ""), "warnings": (parse or {}).get("warnings", []), "notes": (parse or {}).get("notes", []),
+                  "checked": bool((parse or {}).get("checked")), "raw_entries": stat["raw"],
                   "author_replies": len(stat["author_replies"]), "spam": sum(len(v) for v in stat["spam"].values()),
                   "no_text": stat["no_text"], "duplicates": stat["duplicates"]},
         "intent_distribution": [{"intent": k, "count": c, "share": round(c / n, 3), "examples": quotes(intent_samples[k], 2)} for k, c in intent_count.most_common()],
         "keywords": [{"word": w, "comments": c} for w, c in keywords([t for t, _ in comments], stop, top)],
         "aspects": aspects, "pain_clusters": clusters,
-        "question_topics": qtopics, "questions_to_answer": [t for _, t in all_q[:10]],
+        "question_topics": qtopics, "questions_to_answer": open_q[:10], "questions_answered": done_q[:10],
+        "question_count": {"total": len(all_q), "open": len(open_q), "answered": len(done_q), "author_replies_unmatched": 0 if research else stat.get("open_replies", 0)},
+        "claim_checks": checks, "claims_with_numbers": len([1 for _, c in claims or [] if any(q["hard"] for q in C.quantities(c))]) if not research else 0,
         "suggestions": quotes(suggestions, 8), "author_replies": stat["author_replies"][:20],
         "filtered": {k: {"count": len(v), "examples": v[:2]} for k, v in stat["spam"].items()},
         "unclassified": {"count": len(unclassified), "share": round(len(unclassified) / n, 3) if n else 0,
                          "keywords": [w for w, _ in un_kw], "examples": unclassified[:5], "loose_complaints": [w for w, _ in loose.most_common(6)]},
-        "lexicons": [os.path.basename(p) for p, _ in lex.loaded],
+        "lexicons": [os.path.basename(p) for p, _ in lex.loaded], "lexicon_notes": list(lex.notes),
         "actions": actions,
     }
 
@@ -735,66 +942,122 @@ def cut(s, n=60):
 
 
 def to_markdown(r, detail=None):
-    p = r["parse"]
-    L = ["# 评论洞察报告", ""]
-    bits = ["有效评论 **%d** 条" % r["total"]]
+    p, n = r["parse"], r["total"]
+    research = r.get("mode") == "research"
+    L = ["# 评论洞察报告" + ("（调研：别人笔记下的评论）" if research else ""), ""]
+    bits = ["有效评论 **%d** 条" % n]
     for k, name in (("author_replies", "作者回复"), ("spam", "引流或无关"), ("no_text", "无文字"), ("duplicates", "重复")):
         if p[k]:
             bits.append("%s %d 条" % (name, p[k]))
     L.append("解析：识别为「%s」。读到 %d 条，其中%s%s。" % (p["format"], p["raw_entries"], "，".join(bits), "（后几类不计入统计）" if len(bits) > 1 else ""))
     for w in p["warnings"]:
-        L.append("- ⚠️ %s%s" % (w, "（已人工核对条数）" if p.get("checked") else ""))
-    if p["warnings"] and not p.get("checked"):
+        L.append("- ⚠️ 解析存疑：%s" % w)
+    if p["warnings"] and p.get("checked"):
+        L.append("- 已人工核对过条数（--checked）：上面的提示留作记录，不再因此降低可信度。")
+    elif p["warnings"]:
         L.append("- 对照原文数一下条数。条数对，加 --checked 重跑；条数不对，把评论整理成每行一条再跑。")
-    if not r["sample_sufficient"]:
-        L.append("- ⚠️ %s，下面的结果只能当线索。" % ("解析有疑点" if p["warnings"] and r["total"] >= MIN_COMMENTS else "有效评论不到 %d 条" % MIN_COMMENTS))
+    elif p.get("checked"):
+        L.append("- 已人工核对过条数（--checked）。这次解析本来就没有疑点，加不加结果都一样。")
+    for x in p.get("notes") or []:
+        L.append("- 提示：%s" % x)
+    if n < MIN_COMMENTS:
+        L.append("- ⚠️ 样本不足：有效评论 %d 条，不到 %d 条。下面的结果只能当线索，表里不标「痛点」。" % (n, MIN_COMMENTS))
+    elif not r["sample_sufficient"]:
+        L.append("- ⚠️ 解析存疑：条数核对之前，下面的结果只能当线索，表里不标「痛点」。")
     if r["lexicons"]:
-        L.append("- 已加载项目词表：%s" % "、".join(r["lexicons"]))
+        L.append("- 已加载项目词表：%s。词表变了，各维度的数字会跟着变；和以前的报告对比时，两边要用同一份词表。" % "、".join(r["lexicons"]))
+        L += ["  - " + x for x in r.get("lexicon_notes") or []]
+    cc = r.get("claim_checks") or []
+    if cc:
+        L += ["", "## 说法核对", "", "档案里带数字的说法，在评论区被读者追问，或者和评论区里的数字对不上："]
+        for c in cc:
+            L.append("- 档案（%s）写的是「%s」" % (c["source"], cut(c["claim"], 50)))
+            for x in c["replies"]:
+                L.append("  - 作者回复里是 %s：“%s”" % ("、".join(x["numbers"]), cut(x["text"], 80)))
+            for x in c["readers"]:
+                L.append("  - 读者%s：“%s”%s" % ("说的是 " + "、".join(x["numbers"]) if x["numbers"] else "在问这个数字", cut(x["text"], 80), "（%d 赞）" % x["likes"] if x["likes"] else ""))
+        L.append("")
+        L.append("先确认数字站得住。只是被追问、数字本身没错：去评论区回答，最好给出怎么得来的。两边数字不一样：档案错了改档案，回复说错了去评论区更正，两个都对（口径不同）就在下一篇把口径写清楚。确认之前，不要再用这个数字。")
     L += ["", "## 意图分布", "", "一条评论可以同时属于多种意图。", "", "| 意图 | 条数 | 占比 | 代表评论 |", "|---|---|---|---|"]
     for it in r["intent_distribution"]:
-        L.append("| %s | %d | %.0f%% | %s |" % (it["intent"], it["count"], it["share"] * 100, " / ".join(cut(x, 40) for x in it["examples"])))
-    L += ["", "## 关注点", "", "吐槽和疑问都说明用户在意这一点；达到 %d 条吐槽才算一个痛点。" % MIN_MENTIONS, "",
+        L.append("| %s | %d | %s | %s |" % (it["intent"], it["count"], C.pct(it["count"], n), " / ".join(cut(x, 40) for x in it["examples"])))
+    L += ["", "## 关注点", "", "吐槽和疑问都说明读者在意这一点。有效评论满 %d 条、同一维度吐槽满 %d 条，才标「痛点」。一个维度里可能混着几个不同的问题，先看原话是不是在说同一件事。" % (MIN_COMMENTS, MIN_MENTIONS), "",
           "| 维度 | 吐槽 | 疑问 | 好评 | 高频词 | 判断 |", "|---|---|---|---|---|---|"]
     for a in r["aspects"]:
         if a["concern"] + a["praises"] == 0:
             continue
-        verdict = "痛点" if a["complaints"] >= MIN_MENTIONS else ("信息没给够" if a["questions"] >= MIN_MENTIONS else ("亮点" if a["praises"] >= MIN_MENTIONS and a["praises"] > a["concern"] else "线索"))
-        L.append("| %s | %d | %d | %d | %s | %s |" % (a["aspect"], a["complaints"], a["questions"], a["praises"], "、".join(a["top_words"][:4]) or "—", verdict))
+        L.append("| %s | %d | %d | %d | %s | %s |" % (a["aspect"], a["complaints"], a["questions"], a["praises"], "、".join(a["top_words"][:4]) or "—", a.get("verdict") or "线索"))
     if not any(a["concern"] + a["praises"] for a in r["aspects"]):
         L.append("| （没有命中任何维度） | 0 | 0 | 0 | — | — |")
     shown = [a for a in r["aspects"] if a["complaints"]]
     if shown:
-        L += ["", "吐槽原话："]
+        L += ["", "吐槽原话（每个维度最多列 3 条，按点赞排序）："]
         for a in sorted(shown, key=lambda a: -a["complaints"]):
             L.append("- **%s**（%d 条）：%s" % (a["aspect"], a["complaints"], " / ".join("“%s”" % cut(q) for q in a["complaint_quotes"])))
-    L += ["", "## 问题主题（按条数）", ""]
+    qc = r.get("question_count") or {"total": len(r["questions_to_answer"]), "open": len(r["questions_to_answer"]), "answered": 0, "author_replies_unmatched": 0}
+    L += ["", "## 问题主题（提问共 %d 条）" % qc["total"], ""]
+    if r["question_topics"]:
+        L += ["一条提问可能落在两个主题里，也可能只是顺带提到某个维度，所以各主题相加不一定等于提问总数；上面表里的「疑问」只数明确在问这个维度的。", ""]
     for q in r["question_topics"]:
         L.append("- **%s** %d 条：%s" % (q["topic"], q["count"], " / ".join(cut(x) for x in q["examples"])))
     if not r["question_topics"]:
         L.append("没有提问。")
-    if r["questions_to_answer"]:
-        L += ["", "待回复（按点赞排序）："] + ["- " + cut(q, 100) for q in r["questions_to_answer"]]
+
+    def listing(head, items, total):
+        return ["", "%s（%d 条%s）：" % (head, total, "，按点赞排序，列出前 %d 条" % len(items) if total > len(items) else "，按点赞排序")] + ["- " + cut(q, 100) for q in items]
+
+    if research:
+        if r["questions_to_answer"]:
+            L += listing("读者在问", r["questions_to_answer"], qc["open"])
+            L.append("这些是原笔记没讲清楚的地方，可以作为你的笔记要回答的问题。")
+    else:
+        if r["questions_to_answer"]:
+            L += listing("还没回复的问题", r["questions_to_answer"], qc["open"])
+        if r.get("questions_answered"):
+            L += listing("作者已经回复过的", r["questions_answered"], qc["answered"])
+            L.append("（按「回复 昵称：」对上的。）")
+        if qc.get("author_replies_unmatched") and r["questions_to_answer"]:
+            L.append("另有 %d 条作者回复没有写明是回给谁的，对不上是答的哪一条：上面「还没回复」里可能有已经答过的，回复之前看一眼评论区。" % qc["author_replies_unmatched"])
     if r["suggestions"]:
-        L += ["", "## 用户建议", ""] + ["- " + cut(s, 100) for s in r["suggestions"]]
+        L += ["", "## 用户建议", ""] + ["- " + cut(x, 100) for x in r["suggestions"]]
     if r["author_replies"]:
-        L += ["", "## 作者回复（%d 条，不计入统计）" % p["author_replies"], "", "回复里的说法要和笔记正文、卖点一致，写下一篇前核对一遍。", ""] + ["- " + cut(s, 100) for s in r["author_replies"][:8]]
+        shown_n = min(8, len(r["author_replies"]))
+        more = "，列出前 %d 条" % shown_n if p["author_replies"] > shown_n else ""
+        if research:
+            L += ["", "## 原作者的回复（%d 条，不计入统计%s）" % (p["author_replies"], more), "", "这是别人笔记的作者说的话。可以看他怎么回应质疑，不要当成你自己产品的事实。", ""]
+        else:
+            if cc:
+                note = "数字对不上的已经列在上面的「说法核对」里。其余的说法也要和笔记正文、档案一致，发现不一致现在就告诉用户。"
+            elif r.get("claims_with_numbers"):
+                note = "档案里带数字的说法有 %d 条，和这些回复里的数字没有对不上的。其余的说法由你对照笔记正文读一遍，发现不一致现在就告诉用户。" % r["claims_with_numbers"]
+            else:
+                note = "脚本只能核对带数字的说法，这次没有可对的（没有读到档案，或档案的卖点和事实里没有数字）。请对照笔记正文和卖点读一遍这些回复，发现不一致现在就告诉用户。"
+            L += ["", "## 作者回复（%d 条，不计入统计%s）" % (p["author_replies"], more), "", note, ""]
+        L += ["- " + cut(x, 100) for x in r["author_replies"][:8]]
     if r["filtered"]:
         L += ["", "## 已过滤的无关评论", ""] + ["- %s %d 条，例：%s" % (k, v["count"], " / ".join(cut(x, 40) for x in v["examples"])) for k, v in r["filtered"].items()]
     L += ["", "## 高频关键词", "", "、".join("%s(%d)" % (k["word"], k["comments"]) for k in r["keywords"]) or "无（评论过少）"]
     u = r["unclassified"]
-    L += ["", "## 词表覆盖", "", "%d 条评论里有 %d 条（%.0f%%）没有归入任何意图或维度。" % (r["total"], u["count"], u["share"] * 100)]
+    L += ["", "## 词表覆盖", "", "%d 条评论里有 %d 条（%s）没有归入任何意图或维度。" % (n, u["count"], C.pct(u["count"], n))]
     if u["keywords"] or u["loose_complaints"]:
         L.append("其中的高频词：%s。" % "、".join(u["keywords"] + u["loose_complaints"]))
     if u["examples"]:
         L.append("例：" + " / ".join(cut(x, 40) for x in u["examples"][:4]))
-    if u["count"] >= 3 and u["share"] >= 0.25:
+    if u["count"] >= 3 and u["count"] * 4 >= n:
         L.append("如果里面有这个品类特有的痛点词或好评词，把它们写进项目词表 `%s` 后重跑（格式见 references/feedback.md 第 5 节）；改不了的少量误判，人工计数并注明「人工计数」。" % os.path.join(C.DATA_DIRNAME, "lexicon.json"))
-    L += ["", "## 行动建议", ""] + (["- " + a for a in r["actions"]] or ["- 暂无明确信号，继续积累评论。"])
+    L += ["", "## 行动建议", ""] + (["- " + x for x in r["actions"]] or ["- 暂无明确信号，继续积累评论。"])
     if detail:
         L += ["", "## 逐条归类", "", "| 评论 | 意图 | 关注点 |", "|---|---|---|"]
         for t, _, x in detail:
             L.append("| %s | %s | %s |" % (t.replace("|", " ")[:60], "、".join(x["intents"]), "；".join("%s:%s" % (k, LABEL[v[0]]) for k, v in x["aspects"].items()) or "—"))
     return "\n".join(L)
+
+
+def profile_claims(product):
+    """档案里可以拿来和评论区对数字的说法：卖点和各项事实。"""
+    out = [("卖点", x) for x in (product or {}).get("selling_points") or [] if x]
+    out += [("事实·%s" % k, v) for k, v in ((product or {}).get("facts") or {}).items() if v]
+    return out
 
 
 def build_parser():
@@ -803,7 +1066,7 @@ def build_parser():
     ap.add_argument("--research", action="store_true", help="存为调研洞察：数据目录/research/insight.json")
     ap.add_argument("--id", help="存为某次发布的反馈洞察：数据目录/feedback/<编号>_insight.json")
     ap.add_argument("--json", help="把结构化结果写到这个路径")
-    ap.add_argument("--author", default="", help="笔记作者的昵称：这个昵称发的评论按作者回复处理")
+    ap.add_argument("--author", action="append", default=[], help="笔记作者的昵称：这个昵称发的评论按作者回复处理。几篇笔记的评论放在一起时，每个作者各写一次")
     ap.add_argument("--lexicon", action="append", default=[], help="额外的词表 json（可多次）")
     ap.add_argument("--top", type=int, default=15, help="关键词数量")
     ap.add_argument("--detail", action="store_true", help="列出每条评论的归类结果，便于核对")
@@ -822,12 +1085,15 @@ def main():
         rows, info = read_comments(f, a.author)
         raw += rows
         infos.append(info)
-    parse = {"format": "；".join(sorted({i["format"] for i in infos})), "warnings": [w for i in infos for w in i["warnings"]], "checked": a.checked}
+    parse = {"format": "；".join(sorted({i["format"] for i in infos})), "warnings": [w for i in infos for w in i["warnings"]],
+             "notes": [x for i in infos for x in i.get("notes") or []], "checked": a.checked}
     comments, stat = prepare(raw, lex, len(a.files))
     if not comments:
         sys.exit("没有解析到有效评论（读到 %d 条，作者回复 %d，无关 %d，无文字 %d）。txt 每行一条，或直接粘贴评论区复制的内容；csv / json 需要有 评论 / content 字段。"
                  % (stat["raw"], len(stat["author_replies"]), sum(len(v) for v in stat["spam"].values()), stat["no_text"]))
-    r = analyse(comments, a.top, lex, stat, parse)
+    log = None if a.research else C.read_json(C.log_path(a))     # 自己笔记下的评论：拿档案里的数字和评论区对一遍
+    log = log if isinstance(log, dict) else {}
+    r = analyse(comments, a.top, lex, stat, parse, "research" if a.research else "", profile_claims(log.get("product")))
     out = a.json or (C.P(a, "research", "insight.json") if a.research else (C.P(a, "feedback", "%s_insight.json" % a.id.upper()) if a.id else None))
     detail = [(t, likes, lex.analyse(t)) for t, likes in comments] if a.detail else None
     print(to_markdown(r, detail))
@@ -840,7 +1106,15 @@ def main():
         if a.research:
             print("下一步：%s" % C.cmd("research.py", "analyze"))
         elif a.id:
-            print("下一步：录入数据，然后用 verdict 下结论。录入数据的命令：%s" % C.cmd("launch_log.py", "metrics", "--id", a.id.upper(), "--impressions", "N", "--views", "N", "--likes", "N", "--collects", "N", "--comments", "N"))
+            lid = a.id.upper()
+            mine = [l for l in log.get("launches") or [] if str(l.get("id", "")).upper() == lid]
+            if not mine:
+                print("注意：发布日志里还没有 %s。先登记这篇笔记：%s" % (lid, C.cmd("launch_log.py", "add", "--title", '"笔记标题"', "--baseline", "--published", "发布日期")))
+            elif mine[0].get("metrics"):
+                print("下一步（下结论）：%s" % C.cmd("launch_log.py", "verdict", "--id", lid, "--result", "证据不足", "--learning", '"一句话结论"'))
+                print("--result 从 成立、不成立、证据不足 里选一个；没有假设的基线笔记填 基线。")
+            else:
+                print("下一步（录入数据）：%s" % C.cmd("launch_log.py", "metrics", "--id", lid, "--impressions", "N", "--views", "N", "--likes", "N", "--collects", "N", "--comments", "N"))
     else:
         print("没有保存结构化结果。调研用的评论加 --research，某次发布的反馈加 --id L1。")
 

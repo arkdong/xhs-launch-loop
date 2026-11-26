@@ -57,6 +57,12 @@ def build():
         b["text"] = by_sec[b["section"]]
     for k in ("tags", "fixed_tags", "first_comment", "image"):
         new[k] = old[k]
+    answers = {f["key"]: f.get("value", "") for f in old["facts_needed"]}       # 「回应…」是这一篇特有的信息，档案里没有，要手写
+    for f in new["facts_needed"]:
+        if not str(f.get("value") or "").strip():
+            if not str(answers.get(f["key"]) or "").strip():
+                sys.exit("方案多了一项要填的信息「%s」，示例里没有对应的回答。在 examples/sample_plan.json 的 facts_needed 里补上再运行。" % f["key"])
+            f["value"] = answers[f["key"]]
     out = {"_说明": NOTE}
     out.update(new)
     return json.dumps(out, ensure_ascii=False, indent=2) + "\n"

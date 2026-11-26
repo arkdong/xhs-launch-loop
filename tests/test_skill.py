@@ -170,6 +170,15 @@ class PasteNotes(Work):
         self.assertFalse([n["title"] for n in notes if n["title"] in ("3天前", "5632")])
         self.assertIn("有 2 行只有数字或日期", info["warnings"][0])
 
+    def test_like_word_without_a_number_is_zero_and_said_so(self):
+        notes, info = self.notes("护手霜推荐｜打工人必备\n小鹿\n1.2万\n护手霜避雷清单\n阿宁\n赞\n冬天护手霜怎么选\n木木\n356\n")
+        self.assertEqual([(n["title"], n["author"], n["likes"]) for n in notes],
+                         [("护手霜推荐｜打工人必备", "小鹿", 12000), ("护手霜避雷清单", "阿宁", 0), ("冬天护手霜怎么选", "木木", 356)])
+        self.assertTrue(any("有 1 篇的点赞位置只有「赞」字、没有数字" in x and "不是缺失" in x for x in info["notes"]), info)
+        self.assertIsNone(notes[1]["collects"])                    # 没读到的仍然是未知
+        _, plain = self.notes("护手霜推荐｜打工人必备\n小鹿\n1.2万\n冬天护手霜怎么选\n木木\n356\n")
+        self.assertFalse(plain.get("notes"))
+
     def test_cards_with_uneven_blocks_warn(self):
         text = "标题一号笔记\n作者甲\n100\n标题二号笔记\n多出来的一行摘要\n作者乙\n200\n标题三号笔记\n作者丙\n300\n标题四号笔记\n作者丁\n400\n"
         notes, info = self.notes(text)
@@ -310,6 +319,55 @@ class PasteComments(Work):
         self.assertEqual(dict(ok)["之前买的那支太油了，摸鼠标都打滑"], 12)       # 点赞数跟着评论走
         self.assertNotIn("39 一支 50g，主页店铺有", texts)               # 作者回复不算用户反馈
 
+    def test_page_total_and_collapsed_replies_are_reported(self):
+        # 页面自己写的总数、没展开的回复：已读到的评论照常统计，但少读了多少要说出来，差一两条就可能过不了 20 条的门槛
+        _, info = ci.read_comments(os.path.join(FIX, "app_comments_handcream.txt"))
+        self.assertEqual(len(info["notes"]), 2, info["notes"])
+        self.assertTrue(info["notes"][0].startswith("页面上写着共 23 条评论，这里读到 13 条，少 10 条：多半是折叠的回复没有展开"), info["notes"])
+        self.assertEqual(info["notes"][1], "有 1 处回复没有展开（共 2 条），这些回复没有读到。")
+        block = "小熊\n多少钱一支\n3天前 广东\n赞 2\n回复\n富贵花开\n吸收有点慢\n昨天 20:02 山东\n赞 6\n回复\n阿七\n求链接\n3天前 上海\n赞\n回复\n"
+        for head, want in (("共 3 条评论\n", ["页面上写着共 3 条评论，和读到的条数一致。"]), ("", [])):
+            raw, info, _, _ = self.read(head + block)
+            self.assertEqual((len(raw), info["notes"]), (3, want))
+        _, info, _, _ = self.read("共 2 条评论\n" + block)                       # 读到的比页面写的还多：多半读错了，要对照原文
+        self.assertIn("这里读到 3 条，多出 1 条", info["notes"][0])
+        _, info, _, _ = self.read("共 5 条评论\n" + block + "展开 2 条回复\n")
+        self.assertIn("少 2 条", info["notes"][0])
+        self.assertEqual(info["notes"][1], "有 1 处回复没有展开（共 2 条），这些回复没有读到。")
+        self.assertEqual(info["warnings"], [])                                   # 这是说明，不是解析存疑：不降低可信度
+
+    def test_profile_numbers_are_checked_against_the_comment_section(self):
+        # 档案写 45 小时，作者自己回复说 9 小时和 40 小时，读者也在追问：这种对不上要指出来
+        claims = [("卖点", "45 小时续航"), ("事实·价格", "到手 299 元"), ("卖点", "通勤降噪")]
+        replies = ["统一回复：单耳续航 9 小时，配合充电盒总共 40 小时左右，链接在主页店铺", "到手 299，暂时没有学生价"]
+        readers = [("续航真有45小时吗，我朋友那副两天就没电了", 9), ("299 这个价位值了", 3), ("我 259 元买的，比你便宜", 1),
+                   ("通勤一个小时刚好听完一期播客", 0), ("续航 45h 够用一周", 2), ("降噪怎么样？地铁上能压住报站声吗", 5)]
+        got = ci.claim_checks(claims, replies, readers)
+        self.assertEqual([(c["source"], c["claim"]) for c in got], [("卖点", "45 小时续航"), ("事实·价格", "到手 299 元")])
+        hours, price = got
+        self.assertEqual([x["numbers"] for x in hours["replies"]], [["9 小时", "40 小时"]])            # 作者回复里的数字和档案不一样
+        self.assertEqual([(x["text"], x["numbers"]) for x in hours["readers"]], [("续航真有45小时吗，我朋友那副两天就没电了", [])])   # 读者在追问这个数字
+        self.assertEqual(price["replies"], [])                                                          # 「到手 299」和档案一致
+        self.assertEqual([(x["text"], x["numbers"]) for x in price["readers"]], [("我 259 元买的，比你便宜", ["259 元"])])
+        # 说法一致（45h 就是 45 小时）、说的不是一回事（通勤一个小时）、没有数字的卖点：都不报
+        self.assertEqual(ci.claim_checks(claims, ["续航 45 小时，充电 10 分钟"], [("续航 45h 够用一周", 2), ("通勤一个小时刚好听完一期播客", 0)]), [])
+        # 整条命令：自己笔记下的评论和档案对，别人笔记下的不对
+        self.ok("launch_log.py", "init", "--product", "静界 Air 耳机", "--goal", "互动", "--selling-points", "通勤降噪,45 小时续航", "--price", "到手 299 元")
+        self.ok("launch_log.py", "add", "--title", "地铁通勤党的降噪耳机", "--baseline", "--published", "2026-11-19")
+        rows = [("读者%d" % i, t, n) for i, (t, n) in enumerate(readers)] + [("阿澈数码", t, 0) for t in replies]
+        paste = self.write("c.txt", "".join("%s\n%s\n3天前 上海\n赞 %d\n回复\n" % r for r in rows))
+        out = self.ok("comment_insight.py", paste, "--id", "L1", "--author", "阿澈数码")
+        self.assertIn("有效评论 **6** 条，作者回复 2 条", out)
+        self.assertIn("## 说法核对", out)
+        self.assertIn("- 档案（卖点）写的是「45 小时续航」", out)
+        self.assertIn("  - 作者回复里是 9 小时、40 小时：“统一回复：单耳续航 9 小时", out)
+        self.assertIn("  - 读者在问这个数字：“续航真有45小时吗，我朋友那副两天就没电了”（9 赞）", out)
+        self.ok("launch_log.py", "verdict", "--id", "L1", "--result", "基线", "--learning", "地铁场景开头")
+        nxt = self.ok("launch_log.py", "next")                                           # 下了结论以后，下一步的依据里一直带着，直到核实
+        self.assertIn("## 待核实的说法", nxt)
+        self.assertIn("45 小时续航", nxt)
+        self.assertNotIn("说法核对", self.ok("comment_insight.py", paste, "--research", "--author", "阿澈数码"))
+
     def test_author_named_on_command_line(self):
         text = "小熊\n多少钱一支\n3天前 广东\n赞 2\n回复\n店主阿七\n39 一支\n3天前 上海\n赞\n回复\n富贵花开\n吸收有点慢\n昨天 20:02 山东\n赞 6\n回复\n"
         raw, info, ok, stat = self.read(text, author="店主阿七")
@@ -377,13 +435,22 @@ class PasteComments(Work):
         self.assertIn("痛点", out)
         self.assertIn("## 逐条归类", out)
 
-    def test_three_mentions_make_a_pain(self):
-        r = ci.analyse([("太油了", 0), ("黏糊糊的不敢碰手机", 0), ("多少钱一支", 0), ("求链接", 0)])
+    def test_three_complaints_are_a_pain_only_with_enough_comments(self):
+        few = [("太油了", 0), ("黏糊糊的不敢碰手机", 0), ("吸收太慢了，要搓半天", 0)]
+        r = ci.analyse(few + [("多少钱一支", 0)])
         by = {a["aspect"]: a for a in r["aspects"]}
-        self.assertEqual(by["质地与手感"]["complaints"], 2)
-        self.assertFalse(r["pain_clusters"]["质地与手感"]["enough"])            # 两条只是线索
-        r = ci.analyse([("太油了", 0), ("黏糊糊的不敢碰手机", 0), ("吸收太慢了，要搓半天", 0)])
+        self.assertEqual(by["质地与手感"]["complaints"], 3)
+        self.assertFalse(r["pain_clusters"]["质地与手感"]["enough"])            # 3 条吐槽，但一共只有 4 条评论：线索
+        self.assertEqual(by["质地与手感"]["verdict"], "线索（样本不足）")
+        self.assertNotIn("| 痛点 |", ci.to_markdown(r))
+        filler = [("包装好好看 %d" % i, 0) for i in range(17)]
+        r = ci.analyse(few[:2] + filler + [("求链接", 0)])                      # 20 条评论，但这个维度只有 2 条吐槽
+        self.assertFalse(r["pain_clusters"]["质地与手感"]["enough"])
+        r = ci.analyse(few + filler)                                            # 20 条评论，3 条吐槽
         self.assertTrue(r["pain_clusters"]["质地与手感"]["enough"])
+        self.assertEqual({a["aspect"]: a for a in r["aspects"]}["质地与手感"]["verdict"], "痛点")
+        r = ci.analyse(few + filler, parse={"format": "x", "warnings": ["条数可能不准"]})     # 解析有疑点：同样不下判断
+        self.assertEqual({a["aspect"]: a for a in r["aspects"]}["质地与手感"]["verdict"], "线索（解析存疑）")
 
     def test_project_lexicon_example_from_the_docs(self):
         doc = C.read_text(os.path.join(ROOT, "references", "feedback.md"))[0]
@@ -439,7 +506,7 @@ class AnyFolder(Work):
             for m in re.finditer(r"(\S+)\s+(\S*?(?:%s))" % "|".join(re.escape(s) for s in ALL_SCRIPTS), out):
                 if m.group(1) in ("python3", "python", "py"):
                     self.assertTrue(os.path.isabs(m.group(2)) and os.path.exists(m.group(2)), m.group(0))
-        hint = re.search(r"下一步（调研）：(.+)", outs[0]).group(1)
+        hint = re.search(r"调研再写新笔记：(.+)", outs[0]).group(1)
         code = subprocess.run(hint, shell=True, cwd=self.work, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.assertEqual(code.returncode, 0, code.stdout.decode("utf-8", "replace"))      # 提示里的命令原样粘贴就能跑
 
@@ -448,6 +515,40 @@ class AnyFolder(Work):
         self.assertIn("请先建档", out)
         self.assertIn(os.path.join(SCRIPTS, "launch_log.py"), out)
         self.assertIn("尚未建立发布日志", self.ok("launch_log.py", "status"))
+
+    def test_status_without_a_profile_lists_what_to_ask(self):
+        # 还没有档案时，status 给出建档前要问的问题：按用户要做的事分两组，每组一轮问完，命令照着填就能跑
+        out = self.ok("launch_log.py", "status")
+        review, write = out.split("## 二、")
+        self.assertIn("## 一、只想看一篇已经发出去的笔记", review)
+        self.assertIn("问 4 样", review)
+        self.assertIn("调研前问 7 样", write)
+        for k in ll.LATER:
+            self.assertNotIn("%s：" % k, review)                    # 复盘用不到的事实不问
+            self.assertIn("- %s：%s" % (k, ll.FACTS[k]), write)      # 写笔记要的事实留到第二轮，事先说明
+        self.assertEqual(sorted(ll.LATER + ("价格", "身份")), sorted(ll.FACTS))       # 七样必填的事实，要么在第一轮问，要么在第二轮问
+        self.assertIn("不要填「无」", out)
+        self.assertIn("缺点和身份不能填「无」", out)
+        cmds = re.findall(r"(?m)^python3 .+$", out)
+        self.assertEqual(len(cmds), 3)
+        self.assertNotIn("--fact", "".join(cmds))                   # 第一轮的建档命令里没有第二轮才问的事实
+        env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1")
+        for c in cmds[:2]:                                          # 复盘那一组：两条命令原样粘贴就能跑通
+            p = subprocess.run(c, shell=True, cwd=self.work, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            self.assertEqual(p.returncode, 0, p.stdout.decode("utf-8", "replace"))
+        log = self.data("launch_log.json")
+        self.assertEqual((log["product"]["facts"], log["launches"][0]["baseline"], log["launches"][0]["published_at"][:10]), ({}, True, "2026-11-20"))
+        self.assertIn("已存在", self.refused("launch_log.py", *cmds[2].split("launch_log.py ")[1].replace('"', "").split()))
+
+    def test_tone_is_recorded_like_a_fact(self):
+        self.ok("launch_log.py", "init", "--product", "白茶护手霜", "--goal", "互动", "--fact", "语气=朋友聊天")
+        self.assertEqual(self.data("launch_log.json")["product"]["tone"], "朋友聊天")
+        self.assertNotIn("语气", self.data("launch_log.json")["product"]["facts"])
+        self.assertIn("语气 = 像同事安利", self.ok("launch_log.py", "fact", "语气=像同事安利", "外观=白色软管"))
+        p = self.data("launch_log.json")["product"]
+        self.assertEqual((p["tone"], p["facts"]["外观"]), ("像同事安利", "白色软管"))
+        self.refused("launch_log.py", "fact", "语气=无")             # 「无」不是一种语气，原来的不动
+        self.assertEqual(self.data("launch_log.json")["product"]["tone"], "像同事安利")
 
     def test_dir_flag_keeps_products_apart_and_is_carried_in_hints(self):
         out = self.ok("launch_log.py", "--dir", "candle", "init", "--product", "雪松蜡烛", "--category", "香薰蜡烛")
@@ -479,11 +580,60 @@ class AnyFolder(Work):
             self.assertIn(stage, out)
         self.assertEqual(os.listdir(self.work), [])
         self.assertEqual(self.tree(), before)
+        self.assertIn("临时目录已经删除", out)                        # 输出里的路径演示完就不在了，要说一声
         keep = os.path.join(self.work, "keep")
-        self.ok("guide.py", "demo", "--out", keep)
+        kept = self.ok("guide.py", "demo", "--out", keep)
+        self.assertNotIn("临时目录", kept)
+        self.assertIn("产出文件保留在：" + os.path.join(keep, "xhs_launch"), kept)
         log = C.read_json(os.path.join(keep, "xhs_launch", "launch_log.json"))
         self.assertEqual([(l["id"], l["verdict"]["result"]) for l in log["launches"]], [("L1", "基线"), ("L2", "成立")])
         self.assertIn("已有 xhs_launch", run("guide.py", "demo", "--out", keep, cwd=self.work)[1])      # 不覆盖已有数据
+
+    def test_demo_follows_its_own_analysis(self):
+        # 演示登记的假设，就是它自己的分析给出的第一条候选；结论里的数字和诊断算出来的一致
+        keep = os.path.join(self.work, "keep")
+        out = self.ok("guide.py", "demo", "--full", "--out", keep)
+        first = C.read_json(os.path.join(keep, "xhs_launch", "research", "analysis.json"))["hypotheses"][0]
+        l1, l2 = C.read_json(os.path.join(keep, "xhs_launch", "launch_log.json"))["launches"]
+        self.assertEqual(first["basis"], "需求缺口")
+        self.assertIn(first["evidence"], l2["evidence"])
+        self.assertEqual(first["metric"], l2["main_metric"])
+        self.assertIn("「价格」", first["hypothesis"])
+        self.assertIn("价格", l2["hypothesis"])
+        rate = lambda l: "%.1f%%" % (100.0 * l["metrics"][-1]["raw"]["comments"] / l["metrics"][-1]["raw"]["views"])
+        self.assertIn("评论率 %s" % rate(l1), l1["verdict"]["learning"])
+        self.assertIn("评论率 %s，是基线 %s" % (rate(l2), rate(l1)), l2["verdict"]["learning"])
+        self.assertIn("对比 L1：评论率 %s → %s" % (rate(l1), rate(l2)), out)
+
+    def test_demo_shows_key_lines_whole(self):
+        # 默认的演示只列要点：每条命令都有要点，每一行都是完整输出里原样的整行，不会把命令从中间切开
+        a, b = os.path.join(self.work, "a"), os.path.join(self.work, "b")
+        brief = self.ok("guide.py", "demo", "--out", a).replace(a, "DIR")
+        full = self.ok("guide.py", "demo", "--full", "--out", b).replace(b, "DIR")
+        self.assertLess(len(brief), len(full) / 2)
+        self.assertNotIn("以上是要点", full)
+        whole = set(full.splitlines())
+        cmds = [c for _, group in guide.demo_steps() for c in group if c != "COPY_PLAN"]
+        blocks = [x.splitlines() for x in brief.split("\n$ ")[1:]]
+        self.assertEqual(len(blocks), len(cmds))
+        for block in blocks:
+            shown = [l for l in block[1:] if l.startswith("  ") and not l.startswith("  （以上是要点")]
+            self.assertTrue(shown, block[0])
+            for l in shown:
+                self.assertIn(l, whole, "要点里的这一行不是完整输出里的原样整行")
+        for fact in ("有效评论 **21** 条", "| 价格 | 3 | 6 | 0 |", "🎯 缺口", "依据：21 条评论里有 9 条在吐槽或追问它，但 32 篇笔记里只有 3 篇在标题回应", "结论：通过（错误 0，警告 0）",
+                     "读者在问这个数字", "（+158%）", "→ 成立", "## 待核实的说法"):
+            self.assertIn(fact, brief)
+        # 每一组要点规则都对得上真实输出；输出改了写法，这里会先报出来
+        used = {}
+        for cmd, block in zip(cmds, [x.splitlines() for x in full.split("\n$ ")[1:]]):
+            lines = [l[2:] for l in block[1:] if l.startswith("  ")]
+            key = guide.digest_key(cmd)
+            self.assertTrue(guide.digest(key, lines)[1], "演示的要点规则对不上 %s 的输出" % key)
+            used.setdefault(key, set()).update(p for p, _ in guide.DIGEST[key] if any(re.match(r"\s*(?:%s)" % p, l) for l in lines))
+        for key, rules in guide.DIGEST.items():
+            self.assertEqual(used.get(key), set(p for p, _ in rules), "要点规则里有对不上任何输出的写法：" + key)
+        self.assertEqual(guide.digest("没有这种命令", ["a", "b"]), (["a", "b"], False))
 
     def test_same_input_same_output(self):
         ties = "太油了还很黏，而且闷\n有点黏还油，闷手\n又闷又油又黏\n" * 1 + "包装漏了，盖子还裂了，压泵也坏了\n盖子裂了，压泵坏了，包装还漏\n价格多少，味道怎么样，包装好看吗\n"
@@ -577,7 +727,7 @@ class ResearchGuards(Work):
         self.assertFalse(other["opportunity"])
         self.assertEqual(R["angles"][-1]["angle"], "其他")
         md = rs.to_markdown(R, "护手霜")
-        self.assertRegex(md, r"\| 其他 \| 6 \| 19% \| 5000 \| — \|")
+        self.assertRegex(md, r"\| 其他 \| 6 \| 19% \| — \| 5000 \| 6 \| — \|")
         self.assertNotIn("「其他」角度", json.dumps(R["hypotheses"], ensure_ascii=False))
 
     def test_selling_point_synonyms(self):
@@ -640,7 +790,9 @@ class ResearchGuards(Work):
         self.assertIn("品类、卖点、人群取自产品档案", out)
         self.assertIn("护手霜 不黏键盘", out)
         self.assertIn("打工人 护手霜", out)                                    # 人群描述太长时只取人群词
-        self.assertNotIn("39元", out + self.ok("research.py", "keywords", "--full"))      # 只有价格和规格的卖点搜不出同类笔记
+        both = out + self.ok("research.py", "keywords", "--full")
+        self.assertNotRegex(both, r"(?m)^\d+\. .*39元")                         # 只有价格和规格的卖点搜不出同类笔记
+        self.assertIn("卖点「39元50g」只有价格或规格，搜不出同类笔记，没有拿来搜", out)   # 并且说出来，不是悄悄丢掉
         self.assertIn("咖啡液 3秒冷萃", self.ok("research.py", "keywords", "--category", "咖啡液", "--selling-points", "59元20条,3秒冷萃"))      # 命令行写了就用命令行的
         self.assertNotIn("取自产品档案", self.ok("research.py", "keywords", "--category", "咖啡液", "--selling-points", "3秒冷萃", "--audience", "打工人"))
 
@@ -666,11 +818,135 @@ class ResearchGuards(Work):
         self.assertEqual(set(a[0] for a in rs.ANGLES) - set(cp.T), {"单品种草"})                           # 其余角度都有同名模板
         self.assertEqual(cp.pick_template("单品种草", None, "互动", False)[0], "发布体")
 
+    def test_title_hooks_read_what_the_title_means(self):
+        hook = dict(rs.HOOKS)
+        on = lambda name, title: bool(re.search(hook[name], title))
+        for title in ("护手霜怎么选", "这支到底值不值", "学生党买哪支", "30块的护手霜好用吗", "为什么越涂越干"):
+            self.assertTrue(on("疑问句", title), title)
+        for title in ("哪怕再贵也要回购", "没什么用的护手霜别买", "动不动就干裂的手有救了", "时不时涂一下"):
+            self.assertFalse(on("疑问句", title), title)
+        for title in ("护手霜避雷清单", "护手霜红黑榜", "踩雷了，这支别买", "买完就后悔的3支", "不推荐这几支"):
+            self.assertTrue(on("负面/避雷", title), title)
+        for title in ("平价不踩雷的护手霜", "闭眼入不会踩雷", "后悔没早买的护手霜", "再也不怕踩坑"):
+            self.assertFalse(on("负面/避雷", title), title)
+        for title in ("打工人护手霜", "学生党平价清单", "敏感肌也能用", "干皮救星", "程序员的桌面好物", "每天敲键盘的人看过来"):
+            self.assertTrue(on("点名人群", title), title)
+        for title in ("护手霜里的人气单品", "护手霜推荐"):
+            self.assertFalse(on("点名人群", title), title)
+
+    def test_multipliers_without_fan_counts_are_leads(self):
+        # 手动搜回来的卡片没有粉丝数，笔记又分散在很多账号：倍数分不清是写法还是账号的功劳，只当线索
+        notes = [note("这支太绝了！第%s篇" % "一二三四五六七八九十"[i], 5000 + i, "甲%d" % i) for i in range(10)]
+        notes += [note("护手霜笔记%s" % "abcdefghijklmno"[i], 100 + i, "乙%d" % i) for i in range(15)]
+        R = rs.analyze(notes, days=0)
+        hook = next(h for h in R["hooks"] if h["hook"] == "感叹号")
+        self.assertGreater(hook["lift"], 10)
+        self.assertFalse(hook["solid"])
+        self.assertEqual(R["hypotheses"], [])
+        self.assertTrue(any("粉丝数不全" in w for w in R["no_hypothesis_reasons"]), R["no_hypothesis_reasons"])
+        lead = next(x for x in R["leads"] if x["basis"] == "标题钩子")
+        self.assertIn("粉丝数不全", lead["short_of"])
+        md = rs.to_markdown(R, "护手霜")
+        self.assertRegex(md, r"\| 感叹号 \| 10 \| 40% \| [\d.]+ 倍（线索） \| 10 \| — \|  \|")
+        self.assertIn("**线索候选**", md)
+        self.assertIn("还差什么：粉丝数不全", md)
+        with_fans = rs.analyze([dict(n, followers=1000) for n in notes], days=0)       # 同样的笔记，有粉丝数就是正式候选
+        self.assertTrue(any(h["basis"] == "标题钩子" for h in with_fans["hypotheses"]))
+        self.assertEqual(with_fans["leads"], [])
+        self.assertNotIn("（线索）", rs.to_markdown(with_fans, "护手霜"))
+        self.assertIn("能按账号大小校正的篇数", rs.to_markdown(with_fans, "护手霜"))
+        self.assertIn("「可比篇数」是有互动数据的篇数，倍数用它们算。这一批的倍数没有按账号大小校正。", md)
+
+    def test_both_shortfalls_are_named_at_once(self):
+        # 篇数不够、粉丝数也没有：两样一起说。只说篇数的话，用户补到 20 篇才发现倍数还是线索，白跑一趟
+        notes = [note("这支太绝了！第%s篇" % "一二三四五六七八九十"[i], 5000 + i, "甲%d" % i) for i in range(8)]
+        notes += [note("护手霜笔记%s" % "abcdefghijklmno"[i], 100 + i, "乙%d" % i) for i in range(10)]
+        R = rs.analyze(notes, days=0)
+        self.assertEqual(R["hypotheses"], [])
+        self.assertEqual(R["no_hypothesis_reasons"], [
+            "没有评论数据，无法判断需求缺口。",
+            "有互动数据的笔记只有 18 篇，不到 20 篇：角度、钩子、形式的比较不出假设。",
+            "粉丝数也不全：就算补够篇数，倍数没法按账号大小校正，角度、钩子、形式的比较仍然只当线索。"])
+        lead = next(x for x in R["leads"] if x["basis"] == "标题钩子")
+        self.assertEqual(lead["short_of"], "有互动数据的笔记只有 18 篇，不到 20 篇；粉丝数不全，分不清是写法的功劳还是账号大")
+        with_fans = rs.analyze([dict(n, followers=1000) for n in notes], days=0)       # 有粉丝数时只差篇数
+        lead = next(x for x in with_fans["leads"] if x["basis"] == "标题钩子")
+        self.assertEqual(lead["short_of"], "有互动数据的笔记只有 18 篇，不到 20 篇")
+        self.assertFalse(any("粉丝数" in w for w in with_fans["no_hypothesis_reasons"]))
+
+    def test_leads_say_what_is_missing(self):
+        notes = [note("护手霜合集推荐%d" % i, 100 + i, "作者%d" % i) for i in range(18)]
+        few = ci.analyse([("太油了%d" % i, 0) for i in range(5)] + [("味道好好闻%d" % i, 0) for i in range(14)])       # 19 条，差 1 条
+        R = rs.analyze(notes, days=0, insight=few)
+        self.assertEqual(R["hypotheses"], [])
+        lead = R["leads"][0]
+        self.assertEqual((lead["basis"], lead["metric"]), ("需求缺口", "评论率"))
+        self.assertIn("「质地与手感」", lead["hypothesis"])
+        self.assertEqual(lead["evidence"], "19 条评论里有 5 条在吐槽或追问它，18 篇笔记里只有 0 篇在标题回应")
+        self.assertEqual(lead["short_of"], "评论只有 19 条，不到 20 条")
+        md = rs.to_markdown(R, "护手霜")
+        self.assertIn("数据没有给出达到标准的假设", md)
+        self.assertIn("1. **需求缺口（线索）**", md)
+        self.assertIn("缺口（线索）", md)
+        # 读者最在意的点已经有不少笔记在写：不是缺口，照实说，仍然可以当线索
+        covered = notes + [note("不油不黏的护手霜%d" % i, 100, "作者%d" % (i + 50)) for i in range(5)]
+        R = rs.analyze(covered, days=0, insight=few)
+        lead = R["leads"][0]
+        self.assertEqual(lead["basis"], "最受关注的点")
+        self.assertIn("不是缺口：已经有 5 篇笔记在标题回应", lead["short_of"])
+
+    def test_first_post_is_told_it_has_nothing_to_compare_with(self):
+        self.init()
+        self.ok("research.py", "add", os.path.join(EX, "sample_notes.json"))
+        out = self.ok("research.py", "analyze", "--days", "0")
+        self.assertIn("还没有一篇有数据的发布可以比", out)
+        self.assertIn("发布后的结论先记「证据不足」", out)
+        self.assertRegex(out, r"`python3 \S+launch_log\.py add --title \"那一篇的标题\" --baseline --published 发布日期`")
+        self.baseline()
+        self.assertNotIn("还没有一篇有数据的发布可以比", self.ok("research.py", "analyze", "--days", "0"))
+
+    def test_keywords_say_what_was_left_out(self):
+        out = self.ok("research.py", "keywords", "--category", "香薰蜡烛", "--selling-points", "雨后森林的味道不甜腻,燃烧没有黑烟,大豆蜡", "--audience", "租房独居的上班族",
+                      "--pains", "黑烟,太甜腻,烧出坑,贵", "--competitors", "观夏,野兽派")
+        terms = re.findall(r"(?m)^\d+\. (.+)$", out)
+        self.assertEqual(terms[:4], ["香薰蜡烛 推荐", "香薰蜡烛 测评", "香薰蜡烛 避雷", "香薰蜡烛 雨后森林"])       # 长卖点只取核心的几个字
+        for term in ("香薰蜡烛 燃烧没有黑烟", "香薰蜡烛 烧出坑", "上班族 香薰蜡烛", "租房 香薰蜡烛", "观夏 测评"):
+            self.assertIn(term, terms)                                    # 第二条卖点、第三个痛点、更细的人群词都排得进去
+        self.assertIn("没有排进去的：卖点「大豆蜡」；痛点「贵」；人群「独居」；竞品「野兽派」", out)       # 排不进去的说出来，不悄悄丢掉
+        self.assertNotIn("提示：补充", out)
+
+    def test_keywords_use_optional_facts_from_the_profile(self):
+        self.ok("launch_log.py", "init", "--product", "白茶护手霜", "--category", "护手霜", "--audience", "敲键盘的打工人", "--selling-points", "不黏键盘", "--goal", "互动",
+                "--fact", "常见吐槽=油,黏", "--fact", "竞品=欧舒丹")
+        out = self.ok("research.py", "keywords")
+        self.assertIn("品类、卖点、人群、痛点、竞品取自产品档案", out)
+        for term in ("护手霜 油", "护手霜 黏", "欧舒丹 测评"):
+            self.assertIn(term, out)
+        self.ok("launch_log.py", "fact", "竞品=无")                      # 用户说不知道竞品：不拿「无」去搜
+        self.assertNotIn("无 测评", self.ok("research.py", "keywords"))
+
+    def test_add_points_to_the_comments_step_until_it_is_done(self):
+        self.init()
+        hint = 'comment_insight.py 评论文件 --research --author "作者昵称"'
+        first = self.ok("research.py", "add", os.path.join(EX, "sample_search_paste.txt"))
+        self.assertIn("笔记还差 12 篇到 20 篇", first)
+        self.assertIn(hint, first)
+        self.ok("comment_insight.py", os.path.join(EX, "sample_comments_paste.txt"), "--research", "--author", "示例作者")
+        second = self.ok("research.py", "add", os.path.join(EX, "sample_notes.json"))
+        self.assertNotIn(hint, second)
+        self.assertNotIn("笔记还差", second)
+        self.assertIn("research.py analyze", second)
+
     def test_light_keywords_by_default(self):
         out = self.ok("research.py", "keywords", "--category", "护手霜", "--selling-points", "不黏键盘", "--audience", "打工人", "--pains", "油,黏")
         n = len(re.findall(r"^\d+\. ", out, re.M))
         self.assertTrue(4 <= n <= 8, out)
-        self.assertIn("前 10 篇", out)
+        self.assertIn("## 必搜（4 个）", out)
+        self.assertIn("必搜的 4 个词，每个看「综合」排序的前 8 篇，一共 30 篇左右，最少 20 篇", out)      # 工作量只有一个说法，而且算得上
+        self.assertIn("手机 App：搜索结果页一般选不了字，截图发过来", out)
+        self.assertIn("没有粉丝数，所以认不出低粉爆款", out)                  # 手动搜回来的数据能看出什么、看不出什么，事先说清
+        self.assertIn(os.path.join(self.work, "xhs_launch", "inbox"), out)    # 粘贴的内容由助手存成文件，放在哪也说了
+        self.assertIn("还要评论", out)
         full = self.ok("research.py", "keywords", "--category", "护手霜", "--selling-points", "不黏键盘", "--audience", "打工人", "--pains", "油,黏", "--full")
         self.assertGreater(len(re.findall(r"^\d+\. ", full, re.M)), n)
 
@@ -829,27 +1105,42 @@ class Verdicts(Work):
         self.ok("comment_insight.py", self.comments_file(24), "--id", lid)
         self.ok("launch_log.py", "verdict", "--id", lid, "--result", "成立", "--learning", "痛点开头评论率 3.3%")
         out = self.ok("launch_log.py", "next")
-        self.assertRegex(out, r"\*\*质地与手感\*\*：吐槽 \d+ 条")
-        self.assertIn("做下一篇的开头", out)
+        self.assertRegex(out, r"\*\*质地与手感\*\*：吐槽 \d+ 条，疑问 \d+ 条（痛点）")
+        self.assertIn("累计有效评论 24 条（%s 24 条）" % lid, out)
+        self.assertIn("登记为下一篇的假设", out)
+        self.assertIn("先看原话是不是同一个问题", out)
         self.assertIn("一次只改一个变量", out)
         self.assertIn("## 基线", out)
 
-    def test_two_complaints_are_a_lead_until_a_later_launch_adds_a_third(self):
+    def test_complaints_are_a_lead_until_three_of_them_and_twenty_comments(self):
         self.init()
         a = self.launch()
         self.ok("comment_insight.py", self.write("few.txt", "太油了，摸鼠标都打滑\n涂完打字黏键盘真的烦\n油不油啊\n多少钱一支\n味道好好闻\n"), "--id", a)
         self.ok("launch_log.py", "verdict", "--id", a, "--result", "证据不足", "--learning", "评论太少")
         out = self.ok("launch_log.py", "next")
         self.assertIn("**质地与手感**：吐槽 2 条，疑问 1 条（线索）", out)
-        self.assertIn("还没有哪个痛点累计到 3 条", out)
-        self.assertNotIn("做下一篇的开头", out)
+        self.assertIn("还没有哪个维度累计到 3 条吐槽", out)
+        self.assertIn("⚠️ 样本不足：累计有效评论不到 20 条", out)
+        self.assertNotIn("登记为下一篇的假设", out)
         b = self.launch()
         self.ok("comment_insight.py", self.write("one.txt", "吸收太慢了，要搓半天\n包装好好看\n"), "--id", b)
         self.ok("launch_log.py", "verdict", "--id", b, "--result", "证据不足", "--learning", "评论太少")
         out = self.ok("launch_log.py", "next")
-        self.assertIn("**质地与手感**：吐槽 3 条，疑问 1 条\n", out)             # 两次发布加起来满 3 条，才算痛点
-        self.assertIn("「质地与手感」累计 3 条吐槽：用用户原话做下一篇的开头", out)
+        self.assertIn("**质地与手感**：吐槽 3 条，疑问 1 条（线索）", out)        # 吐槽满 3 条了，但两次一共才 7 条有效评论：还是线索
+        self.assertIn("「质地与手感」累计 3 条吐槽，但累计有效评论只有 7 条", out)
+        self.assertNotIn("登记为下一篇的假设", out)
         self.assertIn("（%s）" % a, out)                                          # 原话带出处
+        report = self.ok("launch_log.py", "report")                              # 导出的报告同样带着样本不足的标记
+        self.assertIn("评论：有效 5 条（⚠️ 不到 20 条，评论里的发现只是线索）", report)
+        self.assertIn("⚠️ 样本不足：累计有效评论不到 20 条", report)
+        c = self.launch()
+        self.ok("comment_insight.py", self.write("more.txt", "\n".join("包装好好看，第 %d 次回购" % i for i in range(13)) + "\n"), "--id", c)
+        self.ok("launch_log.py", "verdict", "--id", c, "--result", "证据不足", "--learning", "没有可比的")
+        out = self.ok("launch_log.py", "next")
+        self.assertIn("累计有效评论 20 条", out)
+        self.assertIn("**质地与手感**：吐槽 3 条，疑问 1 条（痛点）", out)        # 三次加起来 20 条评论、3 条吐槽：才算痛点
+        self.assertIn("「质地与手感」累计 3 条吐槽：先看原话是不是同一个问题", out)
+        self.assertNotIn("⚠️ 样本不足", out)
 
 
 # ---------- 6. 方案检查 ----------
@@ -906,7 +1197,7 @@ class Plans(Work):
                  self.ok("launch_log.py", "metrics", "--id", lid, "--impressions", 5000, "--views", 600, "--likes", 40, "--collects", 20, "--comments", 30),
                  self.ok("comment_insight.py", self.comments_file(), "--id", lid),
                  self.ok("launch_log.py", "verdict", "--id", lid, "--result", "证据不足", "--learning", "样本不够"), self.ok("launch_log.py", "next"),
-                 self.ok("guide.py"), self.ok("guide.py", "commands"), self.ok("guide.py", "2"), self.ok("guide.py", "demo")]
+                 self.ok("guide.py"), self.ok("guide.py", "commands"), self.ok("guide.py", "2"), self.ok("guide.py", "demo"), self.ok("guide.py", "demo", "--full")]
         seen = 0
         for out in outs:
             for line in out.splitlines():
@@ -917,6 +1208,7 @@ class Plans(Work):
                     if line[:m.start()].count("`") % 2:
                         rest = rest.split("`")[0]
                     self.assertNotRegex(re.sub(r'"[^"]*"', "", rest), "[（），。；：]", line)
+                    self.assertNotIn("|", re.sub(r'"[^"]*"', "", rest), line)       # 「触达|互动|收藏」这种写法粘到终端里会被当成管道
                     seen += 1
         self.assertGreater(seen, 30)
 
@@ -955,8 +1247,31 @@ class Plans(Work):
         self.assertIn("一次问清用户", out)
         self.fill()
         self.assertIn("信息缺失「价格」", self.check()[1])
-        self.ok("launch_log.py", "fact", *["%s=无" % k for k in ll.FACTS])
+        out = self.ok("launch_log.py", "fact", *["%s=无" % k for k in ll.FACTS])
+        self.assertIn("「缺点」不能填「无」", out)                                 # 这两项答「无」不算回答
+        self.assertIn("「身份」不能填「无」", out)
+        out = self.check()[1]
+        self.assertIn("信息缺失「缺点」", out)
+        self.assertIn("信息缺失「身份」", out)
+        self.assertNotIn("信息缺失「素材」", out)                                 # 别的项，用户明确说没有就是答案
+        self.assertIn("不能填「无」", self.refused("launch_log.py", "fact", "缺点=无"))
+        self.ok("launch_log.py", "fact", "缺点=香味半小时就散了", "身份=店主")
         self.assertNotIn("信息缺失", self.check()[1])
+
+    def test_second_round_asks_for_everything_at_once(self):
+        # 写笔记前的那一轮：缺的事实和写这一篇用得上的外观、语气、固定标签一起问，免得检查没过再回头问
+        self.ok("launch_log.py", "init", "--product", "白茶护手霜", "--category", "护手霜", "--goal", "互动", "--price", "39 元 50g", "--identity", "店主")
+        self.ok("launch_log.py", "add", "--title", "t", "--angle", "痛点", "--hypothesis", "评论率高于基线")
+        out = self.ok("content_plan.py", "new", "--id", "L1")
+        self.assertIn("上面打了空格 [ ] 的 5 项信息，一次问清用户", out)
+        self.assertIn("同一轮里顺带问：产品外观（颜色、形状、材质、包装）、想用的语气、每篇都带的固定标签。", out)
+        self.assertIn("填进方案文件的 image.subject、tone、fixed_tags", out)
+        self.assertRegex(out, r'launch_log\.py fact 外观="…" 语气="…" 固定标签="…"\n')
+        self.ok("launch_log.py", "fact", "外观=白色软管，绿色盖子", "语气=朋友聊天", "固定标签=打工人护手霜", *["%s=有" % k for k in ll.LATER])
+        out = self.ok("content_plan.py", "new", "--id", "L1", "--force")
+        self.assertNotIn("顺带问", out)                                          # 档案里有了就不再问
+        plan = self.data("plans", "L1.json")
+        self.assertEqual((plan["image"]["subject"], plan["tone"], plan["fixed_tags"]), ("白色软管，绿色盖子", "朋友聊天", ["打工人护手霜"]))
 
     def test_facts_in_the_plan_are_written_back_to_the_log(self):
         self.ok("launch_log.py", "init", "--product", "白茶护手霜", "--category", "护手霜", "--goal", "互动")
@@ -1084,13 +1399,146 @@ class Plans(Work):
         self.assertEqual(self.check()[0], 0)
         out = self.ok("content_plan.py", "prompts", "--id", "L1")
         first = out.split("## 第 2 页")[0]
-        self.assertIn("**用实拍。**", first)
-        self.assertIn("只生成场景和背景，不要画出产品本身", first)
+        self.assertIn("这一篇要准备：实拍 1 张（第 1 页）", first)                 # 开头先说清每一页的图从哪来
+        self.assertIn("卡片 1 张（第 6 页）", first)
+        self.assertIn("## 第 1 页：封面（实拍）", first)
+        self.assertIn("**拍摄要求**：办公桌上一支白色护手霜，旁边是键盘", first)
+        back = re.search(r"```\n(只生成场景和背景，不要画出任何产品.*?)\n```", first, re.S).group(1)
+        self.assertNotIn("护手霜", back)                                         # 「不要画产品」的提示词里不能又点名产品
+        self.assertIn("场景：办公桌上，旁边是键盘", back)
+        self.assertEqual(out.count(cp.NEGATIVE), 1)                              # 反向提示词只印一次
         self.assertIn("画面中的产品：白色软管护手霜，50g，哑光管身", out)          # AI 页都用同一句产品描述
         self.assertIn("AI 合成", out)
         self.assertIn("画面中不要出现任何文字", out)
         self.assertIn("“第2页的字”", self.ok("content_plan.py", "prompts", "--id", "L1", "--with-text"))
         self.assertTrue(os.path.exists(os.path.join(self.work, "xhs_launch", "plans", "L1_prompts.md")))
+
+    def test_card_prompt_does_not_ask_for_words_it_forbids(self):
+        self.new_plan()
+        p = self.fill()
+        p["pages"][-1]["visual"] = "浅绿色纯色背景，中间大字写着缺点，下面一行小字写适合谁，右下角一片叶子的简笔画"
+        self.save(p, "plans", "L1.json")
+        out = self.ok("content_plan.py", "prompts", "--id", "L1")
+        card = out.split("## 第 6 页：缺点与适合谁（卡片）")[1]
+        base = re.search(r"\*\*底图提示词\*\*.*?```\n(.*?)\n```", card, re.S).group(1)
+        self.assertTrue(base.startswith("只生成卡片的底图，不要出现任何文字、数字和字母，浅绿色纯色背景，右下角一片叶子的简笔画"), base)
+        for word in ("大字", "小字", "写着", "后期加字"):
+            self.assertNotIn(word, base)
+        self.assertIn("**图上的字**：第6页的字", card)
+        with_text = self.ok("content_plan.py", "prompts", "--id", "L1", "--with-text").split("## 第 6 页")[1]
+        self.assertIn("中间大字写着缺点", with_text)                              # 让图里直接出字时，描述原样保留
+        self.assertIn("“第6页的字”", with_text)
+
+    def test_numbers_must_come_from_the_user(self):
+        self.new_plan()
+        p = self.fill()
+        p["pages"][2]["text"] = "到手 29 元"                                      # 档案里是 39 元
+        p["body"][2]["text"] = "自家小店的护手霜，一支能用 3 个月，持证 12 项。"       # 档案里没说过能用多久；「项」不是脚本认识的单位
+        p["first_comment"] = "主页店铺可以找到，老客回购了 4 次"
+        self.save(p, "plans", "L1.json")
+        code, out = self.check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("数字没有出处：第 3 页的图上文字写的是「29 元」，用户给过的同类数字是「39元」（档案的卖点）。", out)
+        self.assertIn("正文「正文要点」写的是「3 个月」，用户给过的同类数字是「两周」（档案的「使用情况」）", out)
+        self.assertIn('launch_log.py fact 事实名="用户的原话"`', out)             # 告诉怎么把新的事实登记进去
+        self.assertIn("（错误 2，警告 1）", out)                                   # 怎么登记是提示，不算进错误数
+        self.assertIn("- [提示] 用户给了新的事实时这样登记", out)
+        self.assertIn("[警告] 这些说法档案里没有：首评里的「4 次」", out)            # 次数、人数是软数字：提醒，不拦
+        self.assertNotIn("12 项", out)
+        self.assertFalse(os.path.exists(os.path.join(self.work, "xhs_launch", "plans", "L1_draft.txt")))
+        self.ok("launch_log.py", "fact", "耐用=一支大概能用 3 个月", "回购=老客最多回购过四次")     # 用户补了事实，数字就有出处了
+        p["pages"][2]["text"] = "到手 39 元"
+        self.save(p, "plans", "L1.json")
+        code, out = self.check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("错误 0，警告 0", out)
+
+    def test_numbers_that_only_look_different_are_the_same(self):
+        self.new_plan()
+        p = self.fill()
+        p["pages"][1]["text"] = "用了14天"                                        # 档案：两周
+        p["pages"][2]["text"] = "涂完60秒能打字"                                  # 档案：1 分钟
+        p["pages"][3]["text"] = "¥39 一支"                                        # 档案：39 元
+        p["body"][2]["text"] = "自家小店的护手霜，50 克一支，香味 30 分钟就散。"       # 档案：50g、半小时
+        self.save(p, "plans", "L1.json")
+        code, out = self.check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("错误 0，警告 0", out)
+
+    def test_banned_words_are_checked_everywhere_a_reader_looks(self):
+        self.new_plan()
+        for field, where in (("titles", "标题 2"), ("pages", "第 4 页的图上文字"), ("first_comment", "首评")):
+            p = self.fill()
+            if field == "titles":
+                p["titles"][1] = "全网最好用的护手霜？"
+            elif field == "pages":
+                p["pages"][3]["text"] = "加微信领 4 页试用装"
+            else:
+                p["first_comment"] = "主页店铺可以找到，根治干裂"
+            self.save(p, "plans", "L1.json")
+            code, out = self.check()
+            self.assertEqual(code, 1, (field, out))
+            self.assertIn("[错误] [%s]" % where, out)
+        p = self.fill()
+        p["type"], p["unit"] = "视频", "镜头"                                      # 视频的口播也要查
+        for g in p["pages"]:
+            g.update(voiceover="这一镜说一句话", seconds=5)
+        p["pages"][2]["voiceover"] = "这是全网第一的护手霜"
+        self.save(p, "plans", "L1.json")
+        self.assertIn("[错误] [第 3 镜头的口播]", self.check()[1])
+
+    def test_pages_must_say_different_things(self):
+        self.new_plan()
+        p = self.fill()
+        p["pages"][3]["text"] = p["pages"][4]["text"] = "不黏键盘"
+        self.save(p, "plans", "L1.json")
+        code, out = self.check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("第 4、5 页的文字一模一样", out)
+        self.assertIn("第 4 页（要点一） 的任务是给出数字，但文字里没有数字", out)
+
+    def test_disadvantage_cannot_be_none_in_the_plan(self):
+        self.ok("launch_log.py", "init", "--product", "白茶护手霜", "--category", "护手霜", "--goal", "互动")
+        self.ok("launch_log.py", "add", "--title", "t", "--angle", "痛点", "--hypothesis", "评论率高于基线")
+        self.ok("content_plan.py", "new", "--id", "L1")
+        p = self.fill()
+        for f in p["facts_needed"]:
+            f["value"] = "无" if f["key"] in ("缺点", "素材") else "店主" if f["key"] == "身份" else "用户说的 39 元 50g"
+        self.save(p, "plans", "L1.json")
+        code, out = self.check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("信息「缺点」不能填「无」", out)
+        self.assertNotIn("信息「素材」不能填", out)
+        self.assertNotIn("缺点", self.data("launch_log.json")["product"]["facts"])     # 「无」不写回档案
+
+    def test_package_holds_everything_needed_to_publish(self):
+        self.new_plan()
+        self.fill()
+        code, out = self.check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("检查过的范围：三个标题、每一页的字、正文、首评、标签", out)
+        self.assertIn("L1_package.md", out)
+        pack = C.read_text(os.path.join(self.work, "xhs_launch", "plans", "L1_package.md"))[0]
+        for part in ("1. 打字不黏键盘？我用了两周", "2. 39元的护手霜值不值", "3. 敲键盘的人怎么选护手霜", "| 1 封面 | 第1页的字 | 实拍 |", "| 2 痛点场景 | 第2页的字 | AI 生成 |",
+                     "| 6 缺点与适合谁 | 第6页的字 | 卡片 |", "#护手霜 #打工人好物 #办公室好物", "## 首评\n\n主页店铺可以找到，39 元 50g", "内容含 AI 合成", "launch_log.py publish --id L1"):
+            self.assertIn(part, pack)
+
+    def test_fewer_pages_keeps_the_last_one(self):
+        _, out = self.new_plan(new=("--pages", "4"))
+        self.assertEqual([g["role"] for g in self.data("plans", "L1.json")["pages"]], ["封面", "痛点场景", "这是什么", "缺点与适合谁"])
+        self.assertNotIn("这个模板要用户给得出", out)
+        self.ok("launch_log.py", "add", "--title", "实测", "--angle", "测评实测", "--hypothesis", "评论率高于 L1")
+        out = self.ok("content_plan.py", "new", "--id", "L2")
+        self.assertIn("这个模板要用户给得出：3 个测评维度，每个都有用户给的实测结果", out)   # 模板要的东西用户给不出，现在就换
+
+    def test_background_prompt_never_names_the_product(self):
+        p = {"product": "Nova Buds 降噪耳机", "category": "蓝牙耳机"}
+        for visual, scene in (("办公桌上一支白色护手霜，旁边是键盘", ["办公桌上一支白色护手霜", "旁边是键盘"]),      # 说的不是这个产品，原样保留
+                              ("木桌上放着一副白色耳机，窗外是早高峰", ["木桌上", "窗外是早高峰"]),
+                              ("手里拿着 nova buds 降噪耳机的充电盒", []),
+                              ("产品正面特写，背景是通勤地铁车厢", ["背景是通勤地铁车厢"]),
+                              ("地铁车厢里，一个人戴着蓝牙耳机看手机", ["地铁车厢里"])):
+            self.assertEqual(cp.scene_only(visual, cp.product_terms(p)), scene, visual)
 
     def test_video_plan(self):
         self.new_plan("--title", "30 秒看完", "--type", "视频", "--angle", "痛点", "--hypothesis", "视频的观看数高于图文基线")
@@ -1100,7 +1548,7 @@ class Plans(Work):
         code, out = self.check()
         self.assertEqual(code, 0, out)
         self.assertIn("错误 0，警告 0", out)
-        long = "这一镜的口播写得特别长，五秒钟之内根本不可能念完，所以检查的时候应该提醒，把话分到别的镜头或者把这一镜加长"
+        long = "这一镜的口播写得特别长，这么短的时间里根本不可能念完，所以检查的时候应该提醒，把话分到别的镜头或者把这一镜加长"
         p["pages"][1]["voiceover"] = long                        # 只有一镜念不完：提醒，不拦
         self.save(p, "plans", "L1.json")
         code, out = self.check()
@@ -1129,7 +1577,7 @@ class Plans(Work):
         self.assertEqual((p["template"], [b["section"] for b in p["body"]]), ("情绪短片", ["一句话", "结尾提问"]))
         p = self.fill()
         p["pages"][0]["voiceover"] = ""                          # 全片只说一句话
-        p["body"][0]["text"] = "自家小店做的蜡烛，我每晚点两小时。"
+        p["body"][0]["text"] = "自家小店做的，下班后涂一点，我自己用了两周。"
         self.save(p, "plans", "L1.json")
         code, out = self.check()
         self.assertEqual(code, 0, out)
@@ -1392,6 +1840,11 @@ class Docs(unittest.TestCase):
                 for tok in c[1:]:
                     if tok.startswith("--"):
                         self.assertIn(tok, known, c)
+                    self.assertNotRegex(tok, r"[|；]| / ", c)          # 可选项写在说明里，命令本身粘过去就能跑
+        text = run("guide.py", "commands", cwd=tempfile.gettempdir())[1]
+        self.assertIn('comment_insight.py 评论.txt --research --author "作者昵称"', text)
+        self.assertIn("--baseline --published 2026-11-20", text)
+        self.assertNotIn("定位", text)
 
     def test_templates_documented(self):
         doc = C.read_text(os.path.join(ROOT, "references", "note_templates.md"))[0]
@@ -1453,7 +1906,7 @@ class Package(Work):
         self.assertIn("演示完成", sh([sys.executable, "-B", os.path.join(skill, "scripts", "guide.py"), "demo", "--out", "演示"]))
         self.assertTrue(os.path.exists(os.path.join(user, "演示", "xhs_launch", "launch_log.json")))
         out = sh([sys.executable, "-B", os.path.join(skill, "scripts", "launch_log.py"), "init", "--product", "护手霜", "--category", "护手霜", "--audience", "打工人"])
-        hint = re.search(r"下一步（调研）：(.+)", out).group(1)
+        hint = re.search(r"调研再写新笔记：(.+)", out).group(1)
         self.assertIn('"%s"' % os.path.join(skill, "scripts", "research.py"), hint)      # 带空格的路径加了引号
         self.assertIn("搜索词", sh(hint, shell=True))                                    # 原样粘贴到终端就能跑
         left = sorted(os.path.relpath(os.path.join(d, f), skill) for d, _, fs in os.walk(skill) for f in fs)

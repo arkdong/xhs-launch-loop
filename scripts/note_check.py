@@ -46,6 +46,25 @@ def load_rules(extra=()):
 
 
 xhs_len = C.xhs_len
+LEN_RULE = "字数按小红书的算法：汉字和全角符号算 1 个字，英文字母、数字和半角符号每 2 个算 1 个字。"
+
+
+def scan(text, rules):
+    """在一段文字里找词表里的词，以及手机号和外部链接。返回 [(级别, 类别, 说明)]。
+    rules 来自 load_rules，长词在前：命中后盖掉，短词不再重复报。正文、标题、图上的字、口播、首评都用它查。"""
+    text, out = str(text or ""), []
+    masked = SAFE.sub(lambda m: "＿" * len(m.group(0)), text).lower()
+    for level, cat, word, hint in rules:
+        w = word.lower()
+        pat = re.compile(("(?<![a-z])" if re.match("[a-z]", w) else "") + re.escape(w) + ("(?![a-z])" if re.search("[a-z]$", w) else ""))   # 英文缩写不在单词中间匹配（加v 不命中 加VC）
+        masked, n = pat.subn("＿" * len(w), masked)
+        if n:
+            out.append((level, cat, "出现「%s」%d 次，%s。" % (word, n, hint or ("必须替换或删除" if level == "错误" else "建议改成具体描述"))))
+    if re.search(r"1[3-9]\d{9}", text):
+        out.append(("错误", "站外导流", "疑似手机号。"))
+    if re.search(r"https?://|www\.", text, flags=re.I):
+        out.append(("错误", "站外导流", "包含外部链接。"))
+    return out
 
 
 def check(text, extra_words=(), min_body=80):
@@ -85,18 +104,8 @@ def check(text, extra_words=(), min_body=80):
     if len(set(tags)) < len(tags):
         add("警告", "标签", "存在重复标签。")
 
-    full = title + "\n" + body
-    masked = SAFE.sub(lambda m: "＿" * len(m.group(0)), full).lower()
-    for level, cat, word, hint in load_rules(extra_words):      # 长词在前，命中后盖掉，短词不再重复报
-        w = word.lower()
-        pat = re.compile(("(?<![a-z])" if re.match("[a-z]", w) else "") + re.escape(w) + ("(?![a-z])" if re.search("[a-z]$", w) else ""))   # 英文缩写不在单词中间匹配（加v 不命中 加VC）
-        masked, n = pat.subn("＿" * len(w), masked)
-        if n:
-            add(level, cat, "出现「%s」%d 次，%s。" % (word, n, hint or ("必须替换或删除" if level == "错误" else "建议改成具体描述")))
-    if re.search(r"1[3-9]\d{9}", full):
-        add("错误", "站外导流", "疑似手机号。")
-    if re.search(r"https?://|www\.", full, flags=re.I):
-        add("错误", "站外导流", "包含外部链接。")
+    for level, cat, msg in scan(title + "\n" + body, load_rules(extra_words)):
+        add(level, cat, msg)
 
     first = body_plain.splitlines()[0] if body_plain else ""
     if first and xhs_len(first) > 45:
@@ -135,6 +144,7 @@ def main():
         print("# 发布前检查")
         if s:
             print("\n标题：%s（%d/%d 字）｜正文 %d/%d 字｜标签 %d 个" % (s["title"], s["title_len"], TITLE_MAX, s["body_len"], BODY_MAX, len(s["tags"])))
+            print(LEN_RULE + "这里只查这一段文字；图上的字、首评、其余备选标题要另外查，或者用 content_plan.py check 一起查。")
         print("\n结论：%s（错误 %d，警告 %d）\n" % ("通过，可以发布" if r["passed"] else "未通过，请修改后重新检查", r.get("errors", 1), r.get("warnings", 0)))
         for i in sorted(r["issues"], key=lambda x: x["level"] != "错误"):
             print("- [%s][%s] %s" % (i["level"], i["item"], i["message"]))
