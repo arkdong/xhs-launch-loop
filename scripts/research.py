@@ -3,8 +3,8 @@
 """小红书发布前调研：搜索词 → 笔记入库 → 供需分析 → 发布假设候选。
 
 用法（在你自己的工作目录运行，脚本用绝对路径）:
-  python3 research.py keywords --category 品类 [--selling-points a,b] [--audience ..] [--pains a,b] [--competitors a,b] [--full]
-        给出 6 到 8 个搜索词（--full 给完整矩阵）
+  python3 research.py keywords [--category 品类] [--selling-points a,b] [--audience ..] [--pains a,b] [--competitors a,b] [--full]
+        给出 6 到 8 个搜索词（--full 给完整矩阵）。品类、卖点、人群不写时用产品档案里的
   python3 research.py add 文件 [更多文件…] [--keyword 搜索词] [--replace]
         把笔记并入语料库，并打印识别结果供核对。自动识别：
         - 从 App / 网页搜索结果直接复制的文本（标题、作者、点赞数各占一行）
@@ -43,18 +43,32 @@ K = {
     "url": ["url", "link", "note_url", "链接"],
     "type": ["type", "note_type", "类型", "形式"],
 }
+# 角度：每个角度两组词。第一组是明确的说法，第二组是常见但没那么确定的说法（只在标题里找，这些词在正文里太常见）。
+# 归类顺序见 angle_of()。以 re: 开头的是正则；其余的词前面是「不」「没」时不算（「不踩雷」不是避雷帖）。全部用小写。
 ANGLES = [
-    ("避雷踩坑", ["避雷", "踩坑", "踩雷", "别买", "千万别", "后悔", "劝退", "翻车", "不推荐"]),
-    ("对比平替", ["对比", "vs", "平替", "哪个好", "怎么选", "区别", "横评"]),
-    ("测评实测", ["测评", "实测", "亲测", "评测", "体验", "开箱", "试了", "用了", "喝了", "吃了"]),
-    ("教程攻略", ["教程", "攻略", "步骤", "方法", "怎么做", "怎么用", "保姆级", "手把手", "指南", "入门", "喝法", "做法"]),
-    ("征集互动", ["征集", "集合", "看过来", "一人一个", "晒出", "投稿", "邀请你", "等你", "接龙"]),
-    ("结果公布", ["结果公布", "获奖", "公示", "开奖", "揭晓", "揭榜", "入围", "复盘"]),
-    ("上线公告", ["上线", "开启", "首发", "内测", "开放体验", "入驻", "发布", "更新"]),
-    ("答疑科普", ["为什么", "是真的吗", "真的能", "真的假的", "原因", "科普", "真相", "误区"]),
-    ("深度长文", ["一文", "拆解", "揭秘", "设计与实践", "实践", "原理", "深度"]),
-    ("清单合集", ["清单", "合集", "盘点", "推荐", "必买", "好物", "top", "款"]),
-    ("个人故事", ["我的", "我是", "终于", "坚持", "那年", "经历", "日记", "记录", "vlog", "一周", "一个月"]),
+    ("避雷踩坑", ["避雷", "避坑", "踩坑", "踩雷", "别买", "千万别", "劝退", "翻车", "不推荐", "黑榜", "黑名单", "拔草", "慎入", "慎买", "re:后悔(?!没早|没有早|买晚|没早点)"],
+     ["别再买", "不要买", "别入", "交学费", "被坑", "吐槽"]),
+    ("对比平替", ["对比", "re:(?<![a-z])vs(?![a-z])", "平替", "哪个好", "怎么选", "区别", "横评", "比大牌", "大牌同款"],
+     ["re:(?<![a-z])pk(?![a-z])", "差在哪", "差别", "选哪", "哪款", "哪家", "二选一", "怎么挑", "如何选", "如何挑", "选购", "不输", "代替", "替代"]),
+    ("测评实测", ["测评", "实测", "亲测", "评测", "开箱", "试用", "试吃", "试穿", "试色", "空瓶", "回购", "re:(?:使用|真实|上手|入住|初|深度)体验|体验(?:感|了|报告|一下|如何|怎么样)"],
+     ["re:(?<![好难不没别])(?:试|用|喝|吃|穿|戴|涂|住|买)了", "上脚", "上身", "使用感", "真实感受", "用后感", "入手"]),
+    ("教程攻略", ["教程", "攻略", "怎么做", "怎么用", "保姆级", "手把手", "指南", "喝法", "做法", "用法", "吃法", "穿法"],
+     ["步骤", "方法", "入门", "技巧", "诀窍", "秘诀", "流程", "公式", "模板", "教你", "学会", "如何", "怎样", "怎么涂", "怎么穿", "怎么吃", "怎么搭", "怎么洗", "怎么买",
+      "正确", "re:别再(?![问买])", "方案", "搭配", "re:[\\d一二两三四五六七八九十]\\s*步(?!行)"]),
+    ("征集互动", ["征集", "看过来", "一人一个", "晒出", "投稿", "邀请你", "接龙"],
+     ["re:(?:们|都来|全体|速来|所有人)[!！，, ]*集合|集合[!！啦了]", "等你", "抄作业", "在线等", "求推荐", "求助", "求问", "蹲一个", "有没有", "有吗", "评论区", "投票", "帮我选", "邀你", "喊你"]),
+    ("结果公布", ["结果公布", "获奖", "公示", "开奖", "揭晓", "揭榜", "入围", "复盘", "中奖"], ["名单", "战报", "成绩单"]),
+    ("上线公告", ["上线", "首发", "内测", "开放体验", "入驻", "上新", "官宣", "开售", "预售"],
+     ["开启", "发布", "更新", "新品", "开抢", "预告", "返场", "补货", "上架", "到货", "开业", "来袭", "启动"]),
+    ("答疑科普", ["为什么", "是真的吗", "真的能", "真的假的", "科普", "真相", "误区"],
+     ["原因", "要不要", "该不该", "能不能", "值不值", "有必要", "有用吗", "值得买吗", "值得吗", "多少钱", "re:是什么(?!神仙|宝藏|绝世)", "什么是", "怎么回事", "怎么办", "re:吗[？?！!]*$"]),
+    ("深度长文", ["一文", "拆解", "揭秘", "设计与实践", "原理"], ["实践", "深度", "读懂", "详解", "解析", "万字", "干货", "实战"]),
+    ("清单合集", ["清单", "合集", "盘点", "榜单", "排行", "红榜"],
+     ["推荐", "必买", "好物", "re:(?<![a-z])top(?![a-z])", "必入", "必备",
+      "re:(?<![\\d第])(?:[2-9]|\\d{2,}|[两二三四五六七八九十几]+)\\s*(?:款|支|件|种|家|本|条|双|瓶|只|套|部|台|盒|包|杯|首|间|处|样|个(?![月小星礼钟人]))(?!装)"]),
+    ("单品种草", ["种草", "安利", "救星", "挖到宝", "本命", "闭眼入", "相见恨晚", "后悔没早"],
+     ["宝藏", "神器", "天花板", "yyds", "绝了", "爱了", "真香", "续命", "离不开", "别再问", "好用", "好吃", "好喝", "好看", "好闻", "好穿", "re:被.{0,4}(?:问|夸|要链接|种草)"]),
+    ("个人故事", ["日记", "vlog", "那年"], ["我的", "我是", "终于", "坚持", "经历", "记录", "一周", "一个月", "我做了", "我开了", "创业", "辞职", "打卡"]),
 ]
 HOOKS = [
     ("含数字", r"\d"),
@@ -515,8 +529,7 @@ def score(notes):
     ranked = sorted((n for n in notes if n["_eng"] is not None), key=lambda n: n["_eng"])
     pos = {id(n): i for i, n in enumerate(ranked)}
     for n in notes:
-        n["angle"] = next((name for name, ws in ANGLES if any(has_word(n["title"], w) for w in ws)), None) or \
-            next((name for name, ws in ANGLES if any(has_word(n["desc"][:200], w) for w in ws)), "其他")
+        n["angle"] = angle_of(n["title"], n["desc"])
         n["like_fan_ratio"] = round(n["likes"] / max(1, n["followers"]), 2) if n["followers"] and n["likes"] is not None else None
         n["low_fan_hit"] = bool(n["like_fan_ratio"] is not None and ((n["followers"] < 5000 and n["likes"] >= 1000) or (n["like_fan_ratio"] >= 1 and n["likes"] >= 300)))
         if n["_eng"] is None:
@@ -529,8 +542,19 @@ def score(notes):
 
 
 def has_word(text, w):
-    """文本里有这个词，并且前面不是否定（「不踩雷」不算避雷帖）。"""
-    return bool(re.search(r"(?<![不没])" + re.escape(w), text.lower()))
+    """文本里有这个词，并且前面不是否定（「不踩雷」不算避雷帖）。以 re: 开头的按正则找。"""
+    return bool(re.search(w[3:] if w.startswith("re:") else r"(?<![不没])" + re.escape(w), text.lower()))
+
+
+def angle_of(title, desc=""):
+    """一篇笔记的角度。先在标题里找明确的说法，再在标题里找不太确定的说法，最后在正文开头找明确的说法；
+    每一轮按 ANGLES 的顺序取第一个命中的。都没有就是「其他」：宁可不归类，也不硬归。"""
+    title, head = (title or "").strip(), (desc or "")[:200]
+    for text, col in ((title, 1), (title, 2), (head, 1)):
+        hit = next((a[0] for a in ANGLES if any(has_word(text, w) for w in a[col])), None)
+        if hit:
+            return hit
+    return "其他"
 
 
 def ref(n):
@@ -569,7 +593,31 @@ def spread(group):
 
 
 def _norm_point(p):
-    return re.sub(r"[\s\W_]+", "", p or "", flags=re.U)
+    """卖点去掉空白和标点后的样子（数字中间的小数点留着：4.5 元不能变成 45 元）。"""
+    return "".join(re.findall(r"\d+(?:\.\d+)?|[^\W_]", p or "", flags=re.U))
+
+
+SAME_CHAR = {ord("黏"): "粘"}       # 两种写法都常见的字，比对时算同一个
+
+
+def _fold(s):
+    """比对卖点用：不分大小写，不管空格，「黏」和「粘」算同一个字。"""
+    return re.sub(r"\s+", "", s or "").lower().translate(SAME_CHAR)
+
+
+def _pieces(p):
+    """卖点里连续 4 个字的片段，用来找只说了半句的笔记（「一杯不到4块」→「一杯不到」）。
+    不从数字或英文单词中间切开：「39元50g」切出的「9元50」会把别的价格也算成撞卖点。片段里至少要有 2 个汉字。"""
+    out, edge = [], "的了和与及是在有很都也就还"
+    glued = lambda x, y: bool(re.match(r"[0-9A-Za-z.]{2}$", x + y))
+    for i in range(len(p) - 3):
+        t = p[i:i + 4]
+        if t[0] in edge or t[-1] in edge or len(re.findall("[%s]" % ci.CJK, t)) < 2:
+            continue
+        if (i and glued(p[i - 1], p[i])) or (i + 4 < len(p) and glued(p[i + 3], p[i + 4])):
+            continue
+        out.append(t)
+    return out
 
 
 def selling_terms(points, extra=()):
@@ -582,10 +630,7 @@ def selling_terms(points, extra=()):
         p = _norm_point(p)
         if len(p) < 2:
             continue
-        terms = [p]
-        if len(p) > 4:
-            terms += [p[i:i + 4] for i in range(len(p) - 3) if p[i] not in "的了和与及是在有很都也就还" and p[i + 3] not in "的了和与及是在有很都也就还"]
-        out[p] = terms
+        out[p] = [p] + [t for t in _pieces(p) if t != p]
     for item in extra:
         name, _, syn = item.partition("=")
         if not syn and "＝" in item:
@@ -631,10 +676,11 @@ def analyze(notes, days=90, top=10, insight=None, selling=None, lex=None):
 
     # 撞卖点
     same = []
+    folded = {id(n): (_fold(n["title"]), _fold(n["title"] + " " + n["desc"])) for n in notes} if selling else {}
     for point, terms in (selling or {}).items():
         per = OrderedDict()
         for t in terms:
-            per[t] = [n for n in notes if t.lower() in (n["title"] + " " + n["desc"]).lower()]
+            per[t] = [n for n in notes if _fold(t) in folded[id(n)][1]]
         # 一半以上笔记都有的说法太泛，分不出谁在讲这个卖点：不用它（卖点原文除外）
         too_wide = [t for t in terms[1:] if len(per[t]) > n_all * 0.5]
         hits, seen = [], set()
@@ -644,15 +690,17 @@ def analyze(notes, days=90, top=10, insight=None, selling=None, lex=None):
             for n in per[t]:
                 if id(n) not in seen:
                     seen.add(id(n))
-                    hits.append((n, t, t.lower() in n["title"].lower()))
+                    hits.append((n, t, _fold(t) in folded[id(n)][0]))
         hits.sort(key=lambda h: -(h[0]["_eng"] or 0))
-        same.append({"selling_point": point, "terms": [t for t in terms if t not in too_wide], "ignored_terms": too_wide, "notes": len(hits), "in_title": sum(1 for h in hits if h[2]),
+        pieces = set(_pieces(point)) - {point}
+        same.append({"selling_point": point, "terms": [t for t in terms if t not in too_wide], "pieces": [t for t in terms if t in pieces and t not in too_wide],
+                     "ignored_terms": too_wide, "notes": len(hits), "in_title": sum(1 for h in hits if h[2]),
                      "share": round(len(hits) / n_all, 3), "top": [dict(brief(n), matched=t) for n, t, _ in hits[:5]]})
     R["same_selling_point"] = same
 
     # 角度供给。「其他」是没归类的笔记，只列出来，不当比较对象。
     angles = []
-    for name in [a for a, _ in ANGLES] + ["其他"]:
+    for name in [a[0] for a in ANGLES] + ["其他"]:
         g = [n for n in notes if n["angle"] == name]
         gv = [n for n in g if n["_eng"] is not None]
         if not g:
@@ -813,9 +861,10 @@ def to_markdown(R, topic):
     if not R["same_selling_point"]:
         L.append("没有提供卖点。加 `--selling-terms \"卖点=别的说法1/别的说法2\"` 重跑，可以看到已经在讲同一个卖点的笔记。")
     else:
-        L += ["脚本只认字面：每个卖点按「原文 + 你补充的说法」去找。同一个卖点常有别的说法，用 `--selling-terms \"卖点=说法1/说法2\"` 补上再跑一次。", ""]
+        L += ["脚本只认字面：每个卖点按「原文 + 原文里连续 4 个字的片段 + 你补充的说法」去找，不分大小写和空格。同一个卖点常有别的说法，用 `--selling-terms \"卖点=说法1/说法2\"` 补上再跑一次。", ""]
     for s in R["same_selling_point"]:
-        used = "、".join("「%s」" % t for t in s.get("terms", [s["selling_point"]])[:6])
+        pieces = s.get("pieces", [])
+        used = "、".join("「%s」" % t for t in s.get("terms", [s["selling_point"]]) if t not in pieces) + ("，以及原文的 %d 个片段" % len(pieces) if pieces else "")
         wide = "（「%s」一半以上的笔记都有，太泛，没有用它）" % "」「".join(s["ignored_terms"]) if s.get("ignored_terms") else ""
         if not s["notes"]:
             L.append("- **%s**：%d 篇里没有笔记提到（查的说法：%s）%s。可能是空白，也可能只是说法不同：补上别的说法再查一次，再下「没人讲过」的结论。" % (s["selling_point"], n, used, wide))
@@ -883,8 +932,43 @@ def corpus_path(a):
     return getattr(a, "corpus", None) or C.P(a, "research", "notes.json")
 
 
+PERSONA = r"学生党|打工人|上班族|宝妈|宝爸|新手|小白|租房党?|宿舍党?|社畜|懒人|通勤党?|出差党?|[\u4e00-\u9fff]{2,3}(?:党|星人|人群|肌|皮)"
+
+
+UNIT = r"(?:元|块钱?|毛|rmb|¥|￥|g|克|kg|千克|公斤|斤|ml|毫升|l|升|oz|片|粒|颗|支|瓶|盒|包|袋|条|抽|只|个|枚|件|寸|cm|mm|米|瓦|w|mah|小时|分钟|天|折|%)"
+
+
+def spec_only(point):
+    """卖点是不是只有价格或规格（「39元50g」「39元一支」）：这种词搜不出同类笔记。"""
+    rest = re.sub(r"\d+(?:\.\d+)?\s*%s?" % UNIT, "", _norm_point(point), flags=re.I)
+    return len(re.sub(r"[一每仅才约起只就装/]|%s" % UNIT, "", rest, flags=re.I)) < 2
+
+
+def search_words(sells, aud):
+    """档案里的卖点和人群 → 适合放进搜索框的短词。
+    只有价格或规格的卖点不拿来搜，带数字的排到后面；人群描述太长时只取里面的人群词（「每天敲键盘的打工人」→「打工人」）。"""
+    sells = [s for s in sells if not spec_only(s)]
+    sells = [s for s in sells if not re.search(r"\d", s)] + [s for s in sells if re.search(r"\d", s)]
+    short = []
+    for x in aud:
+        m = re.findall(PERSONA, x)
+        x = x if len(x) <= 6 else (m[-1] if m else "")       # 人群词一般在最后：「租房独居的上班族」→「上班族」
+        if x and x not in short:
+            short.append(x)
+    return sells, short
+
+
 def cmd_keywords(a):
-    c, aud, pains, comps, sells = a.category, split(a.audience), split(a.pains), split(a.competitors), split(a.selling_points)
+    prod = (C.read_json(C.log_path(a)) or {}).get("product") or {}
+    c = (a.category or prod.get("category") or "").strip()
+    if not c:
+        sys.exit("还不知道品类。加上 --category \"品类\"，或者先建档（建档后不用再写品类和卖点）：%s" % C.cmd(
+            "launch_log.py", "init", "--product", '"产品名"', "--category", '"品类"', "--audience", '"目标人群"', "--selling-points", '"卖点1,卖点2"', "--goal", "互动"))
+    from_profile = [name for name, flag, v in (("品类", a.category, prod.get("category")), ("卖点", a.selling_points, prod.get("selling_points")),
+                                               ("人群", a.audience, prod.get("audience"))) if not flag and v]
+    pains, comps = split(a.pains), split(a.competitors)
+    sells, aud = search_words(split(a.selling_points) or list(prod.get("selling_points") or []), split(a.audience) or split(prod.get("audience")))
+    a.product = a.product or prod.get("name")
     if a.full:
         G = [("品类基础（看整体供给）", [c + " 推荐", c + " 测评", c + " 怎么选"]),
              ("反面（看真实痛点）", [c + " 避雷", c + " 踩坑", c + " 缺点", c + " 后悔"]),
@@ -901,6 +985,8 @@ def cmd_keywords(a):
         if len(G[1][1]) < 2:
             G[1][1].append(c + " 缺点")
     print("# 搜索词：%s%s\n" % (c, "（完整矩阵）" if a.full else ""))
+    if from_profile:
+        print("%s取自产品档案。\n" % "、".join(from_profile))
     n = 0
     for name, ks in G:
         ks = [k for k in ks if k]
@@ -961,7 +1047,7 @@ def cmd_add(a):
     else:
         prod = (C.read_json(C.log_path(a)) or {}).get("product") or {}
         if prod.get("selling_points"):
-            print("下一步：%s（品类和卖点自动取自产品档案）" % C.cmd("research.py", "analyze"))
+            print("下一步（品类和卖点自动取自产品档案）：%s" % C.cmd("research.py", "analyze"))
         else:
             print("下一步：%s" % C.cmd("research.py", "analyze", "--topic", '"品类"', "--selling-terms", '"卖点=别的说法1/别的说法2"'))
 
@@ -1022,9 +1108,9 @@ def build_parser():
         return s
 
     s = sp("keywords", cmd_keywords, "给出搜索词")
-    s.add_argument("--category", required=True, help="品类，例如 护手霜")
-    s.add_argument("--selling-points", help="核心卖点，逗号分隔")
-    s.add_argument("--audience", help="目标人群，逗号分隔")
+    s.add_argument("--category", help="品类，例如 护手霜。不写时用产品档案里的")
+    s.add_argument("--selling-points", help="核心卖点，逗号分隔。不写时用产品档案里的")
+    s.add_argument("--audience", help="目标人群，逗号分隔。不写时用产品档案里的")
     s.add_argument("--pains", help="已知痛点，逗号分隔")
     s.add_argument("--competitors", help="竞品名，逗号分隔")
     s.add_argument("--product", help="产品名（配合 --launched）")

@@ -840,7 +840,7 @@ def main():
         if a.research:
             print("下一步：%s" % C.cmd("research.py", "analyze"))
         elif a.id:
-            print("下一步：录入数据 %s，再用 verdict 下结论。" % C.cmd("launch_log.py", "metrics", "--id", a.id.upper(), "--impressions", "N", "--views", "N", "--likes", "N", "--collects", "N", "--comments", "N"))
+            print("下一步：录入数据，然后用 verdict 下结论。录入数据的命令：%s" % C.cmd("launch_log.py", "metrics", "--id", a.id.upper(), "--impressions", "N", "--views", "N", "--likes", "N", "--collects", "N", "--comments", "N"))
     else:
         print("没有保存结构化结果。调研用的评论加 --research，某次发布的反馈加 --id L1。")
 

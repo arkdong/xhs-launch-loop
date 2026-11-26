@@ -39,7 +39,7 @@ COMMANDS = [
         ("之后补充或修改事实", ["launch_log.py", "fact", '价格="…"', '缺点="…"']),
     ]),
     ("① 调研", [
-        ("搜索词（默认 6 到 8 个，够手动搜）", ["research.py", "keywords", "--category", '"品类"', "--selling-points", '"卖点1,卖点2"', "--audience", '"人群"']),
+        ("搜索词（默认 6 到 8 个，够手动搜；品类、卖点、人群取自档案）", ["research.py", "keywords"]),
         ("笔记入库：搜索结果直接全选复制存成文件即可", ["research.py", "add", "搜索结果.txt", "--keyword", '"搜索词"']),
         ("竞品评论：评论区直接复制存成文件即可", ["comment_insight.py", "竞品评论.txt", "--research"]),
         ("供需分析", ["research.py", "analyze"]),
@@ -132,7 +132,7 @@ def demo_steps(ex=None):
              "--fact", "素材=产品图 3 张、冲泡过程视频 1 段", "--fact", "购买方式=小红书店铺：早八咖啡局"],
         ]),
         ("① 调研：拿搜索词；把从 App 复制的搜索结果和工具导出的数据入库；分析竞品评论；做供需分析", [
-            ["research.py", "keywords", "--category", "咖啡液", "--selling-points", "3秒冷萃,一杯不到4块", "--audience", "打工人"],
+            ["research.py", "keywords"],
             ["research.py", "add", ex("sample_search_paste.txt"), "--keyword", "咖啡液 避雷"],
             ["research.py", "add", ex("sample_notes.json"), "--keyword", "冷萃咖啡液"],
             ["comment_insight.py", ex("sample_comments_paste.txt"), "--research", "--author", "示例作者"],
@@ -184,7 +184,7 @@ def demo(out, full):
                     ok = False
                     print("这一步没有通过，演示停止。")
                     return 1
-        print("演示完成。四个阶段也可以单独使用：%s 查看每一步的示例。" % C.cmd("guide.py", "1|2|3|4"))
+        print("演示完成。四个阶段也可以单独使用，把最后的数字换成 1 到 4 可以看每个阶段的示例：%s" % C.cmd("guide.py", "1"))
         if out:
             print("产出文件保留在：%s" % os.path.join(work, "xhs_launch"))
         return 0

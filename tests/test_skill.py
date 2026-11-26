@@ -616,6 +616,56 @@ class ResearchGuards(Work):
         full = [note("笔记%d" % i, 100 + i, "作者%d" % i, 1000, 10, 5) for i in range(20)]
         self.assertEqual(rs.analyze(full, days=0)["basis"], "赞 + 2×藏 + 3×评")
 
+    def test_price_and_spec_points_are_not_cut_into_other_prices(self):
+        terms = rs.selling_terms(["39 元 50g", "一杯4.5元", "45小时续航", "一杯不到4块", "不黏键盘"])
+        self.assertEqual(terms["39元50g"], ["39元50g"])                       # 「9元50」会把 19 元、99 元也算成撞卖点
+        self.assertEqual(terms["一杯4.5元"], ["一杯4.5元"])                    # 小数点不能丢：4.5 元不是 45 元
+        self.assertEqual(terms["45小时续航"], ["45小时续航", "45小时", "小时续航"])
+        self.assertEqual(terms["一杯不到4块"], ["一杯不到4块", "一杯不到", "杯不到4", "不到4块"])
+        notes = [note("99元50g的大牌护手霜值不值", 900, "甲", 1000), note("19元50g学生党护手霜", 800, "乙", 1000), note("这支 39 元 50G，够用一冬天", 700, "丙", 1000),
+                 note("不粘键盘的护手霜，打字党看", 600, "丁", 1000)]
+        notes += [note("护手霜推荐第%d篇" % i, 100, "作者%d" % i, 1000) for i in range(20)]
+        R = rs.analyze(notes, days=0, selling=terms)
+        by = {s["selling_point"]: s for s in R["same_selling_point"]}
+        self.assertEqual([n["title"] for n in by["39元50g"]["top"]], ["这支 39 元 50G，够用一冬天"])      # 不管空格和大小写，但别的价格不算
+        self.assertEqual((by["不黏键盘"]["notes"], by["不黏键盘"]["in_title"]), (1, 1))                  # 「黏」「粘」两种写法是同一个卖点
+        md = rs.to_markdown(R, "护手霜")
+        self.assertIn("查的说法：「39元50g」）", md)
+        self.assertIn("查的说法：「45小时续航」，以及原文的 2 个片段）", md)
+
+    def test_keywords_come_from_the_profile(self):
+        self.assertIn("还不知道品类", self.refused("research.py", "keywords"))
+        self.ok("launch_log.py", "init", "--product", "白茶护手霜", "--category", "护手霜", "--audience", "每天敲键盘的打工人", "--selling-points", "39元50g,不黏键盘")
+        out = self.ok("research.py", "keywords")
+        self.assertIn("品类、卖点、人群取自产品档案", out)
+        self.assertIn("护手霜 不黏键盘", out)
+        self.assertIn("打工人 护手霜", out)                                    # 人群描述太长时只取人群词
+        self.assertNotIn("39元", out + self.ok("research.py", "keywords", "--full"))      # 只有价格和规格的卖点搜不出同类笔记
+        self.assertIn("咖啡液 3秒冷萃", self.ok("research.py", "keywords", "--category", "咖啡液", "--selling-points", "59元20条,3秒冷萃"))      # 命令行写了就用命令行的
+        self.assertNotIn("取自产品档案", self.ok("research.py", "keywords", "--category", "咖啡液", "--selling-points", "3秒冷萃", "--audience", "打工人"))
+
+    def test_labeled_titles_get_their_angle(self):
+        cases, wrong = 0, []
+        with open(os.path.join(FIX, "labeled_titles.txt"), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                title, want = [x.strip() for x in line.rsplit("|", 1)]
+                got = rs.angle_of(title)
+                cases += 1
+                if (got == want[1:]) if want.startswith("!") else (got != want):
+                    wrong.append("%s：应为 %s，实际 %s" % (title, want, got))
+        self.assertGreater(cases, 60)
+        self.assertEqual(wrong, [])
+
+    def test_angle_words_in_the_body_only_count_when_unambiguous(self):
+        self.assertEqual(rs.angle_of("白茶护手霜", "这次写一篇保姆级教程，手把手教你"), "教程攻略")
+        self.assertEqual(rs.angle_of("白茶护手霜", "我的同事推荐给我的，用了两周，终于不干了"), "其他")     # 「我的」「推荐」「用了」在正文里太常见
+        self.assertEqual(rs.angle_of("护手霜征集｜说说你的小方法", ""), "征集互动")                        # 「征集」是明确的说法，「方法」不太确定：明确的优先
+        self.assertEqual(set(a[0] for a in rs.ANGLES) - set(cp.T), {"单品种草"})                           # 其余角度都有同名模板
+        self.assertEqual(cp.pick_template("单品种草", None, "互动", False)[0], "发布体")
+
     def test_light_keywords_by_default(self):
         out = self.ok("research.py", "keywords", "--category", "护手霜", "--selling-points", "不黏键盘", "--audience", "打工人", "--pains", "油,黏")
         n = len(re.findall(r"^\d+\. ", out, re.M))
@@ -844,6 +894,31 @@ class Plans(Work):
         self.assertTrue(draft.startswith("打字不黏键盘？我用了两周\n"))
         self.assertIn("#护手霜 #打工人好物 #办公室好物", draft)
         self.assertEqual(nc.check(draft)["errors"], 0)
+
+    def test_every_command_hint_ends_its_line(self):
+        # 提示里的命令要能整行复制：命令后面不接说明文字，要么在行尾，要么包在反引号里
+        lid, out = self.new_plan()
+        outs = [out, self.ok("launch_log.py", "status"), self.ok("research.py", "keywords"), self.ok("research.py", "add", os.path.join(EX, "sample_notes.json")),
+                self.ok("comment_insight.py", os.path.join(EX, "sample_comments.txt"), "--research"), self.ok("research.py", "analyze", "--days", "0")]
+        self.fill()
+        outs += [self.check()[1], self.ok("content_plan.py", "prompts", "--id", lid),
+                 self.ok("launch_log.py", "publish", "--id", lid, "--url", "https://www.xiaohongshu.com/explore/" + NOTE_ID % 1),
+                 self.ok("launch_log.py", "metrics", "--id", lid, "--impressions", 5000, "--views", 600, "--likes", 40, "--collects", 20, "--comments", 30),
+                 self.ok("comment_insight.py", self.comments_file(), "--id", lid),
+                 self.ok("launch_log.py", "verdict", "--id", lid, "--result", "证据不足", "--learning", "样本不够"), self.ok("launch_log.py", "next"),
+                 self.ok("guide.py"), self.ok("guide.py", "commands"), self.ok("guide.py", "2"), self.ok("guide.py", "demo")]
+        seen = 0
+        for out in outs:
+            for line in out.splitlines():
+                if line.startswith("$ "):                                   # 演示里回显的命令：整行都是命令
+                    continue
+                for m in re.finditer(r"python3 \S*?(?:%s)" % "|".join(re.escape(x) for x in ALL_SCRIPTS), line):
+                    rest = line[m.end():]
+                    if line[:m.start()].count("`") % 2:
+                        rest = rest.split("`")[0]
+                    self.assertNotRegex(re.sub(r'"[^"]*"', "", rest), "[（），。；：]", line)
+                    seen += 1
+        self.assertGreater(seen, 30)
 
     def test_empty_plan_lists_what_is_missing(self):
         self.new_plan()

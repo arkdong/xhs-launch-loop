@@ -56,7 +56,7 @@ python3 <技能目录>/scripts/launch_log.py init --product "产品名" --catego
 
 目标是做一个决定：用什么角度，验证哪一条假设。方法和读法见 `references/research.md`。
 
-1. **搜索词**：`research.py keywords --category "品类" --selling-points "…" --audience "…"` 给 6 到 8 个词。每个词看「综合」前 10 篇，总量 30 篇左右就够。环境里有小红书搜索工具时直接搜，把结果存成 json（`--full` 给完整词表）；没有就请用户手动搜。本技能不带抓取程序，不要账号和 Cookie。
+1. **搜索词**：`research.py keywords` 给 6 到 8 个词（品类、卖点、人群取自档案；竞品和已知痛点用 `--competitors`、`--pains` 补充）。每个词看「综合」前 10 篇，总量 30 篇左右就够。环境里有小红书搜索工具时直接搜，把结果存成 json（`--full` 给完整词表）；没有就请用户手动搜。本技能不带抓取程序，不要账号和 Cookie。
 2. **笔记入库**：`research.py add 文件 --keyword "搜索词"`。用户把搜索结果页**全选复制**存成文件就行，不用整理；csv、json、每行一篇（`标题 | 作者 昵称 | 赞 1.2万`）也可以；截图由你转写成每行一篇。**入库后核对输出里的篇数和前几条**，不对就按提示用 `--replace` 重来。
 3. **竞品评论**：`comment_insight.py 评论.txt --research --author "笔记作者昵称"`。评论区直接复制即可，作者回复和引流评论会被单独分出来。
 4. **分析**：`research.py analyze`（品类和卖点取自档案）。输出撞卖点、角度供给、标题钩子、需求缺口、低粉爆款、假设候选。脚本只认字面，卖点的其他说法由你补上：`--selling-terms "不黏手=不粘/不油/吸收快"`。

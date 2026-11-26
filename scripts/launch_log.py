@@ -239,8 +239,10 @@ def cmd_init(a):
         print("补充：%s" % C.cmd("launch_log.py", "fact", *['%s="…"' % k for k in miss[:3]]))
     if not p["goal"]:
         print("还没定发布目标：--goal 触达（让更多人看到）｜互动（多评论）｜收藏（被当资料存下来）。")
-    print("下一步（调研）：%s" % C.cmd("research.py", "keywords", "--category", C.quote(p["category"] or "品类"), "--selling-points",
-                                 C.quote(",".join(p["selling_points"]) or "卖点")))
+    if p["category"]:
+        print("下一步（调研）：%s\n（品类、卖点、人群自动取自档案，不用再写。）" % C.cmd("research.py", "keywords"))
+    else:
+        print("下一步（调研）：%s" % C.cmd("research.py", "keywords", "--category", '"品类"'))
 
 
 def cmd_fact(a):

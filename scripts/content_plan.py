@@ -326,7 +326,7 @@ def cmd_new(a):
     if goal in GOAL_TEMPLATES:
         print("发布目标「%s」→ 主指标：%s。%s。" % (goal, ll.GOALS[goal], GOAL_TEMPLATES[goal][1]))
     else:
-        print("还没定发布目标。用 %s 定下来，方案会按目标定主指标。" % C.cmd("launch_log.py", "init", "--force", "--goal", "触达|互动|收藏"))
+        print("还没定发布目标，方案会按目标定主指标。三选一（触达、互动、收藏）定下来：%s" % C.cmd("launch_log.py", "init", "--force", "--goal", "互动"))
     if prev:
         print("已沿用 %s 的配图设定和固定标签，保持系列一致。" % prev["id"])
     print()
