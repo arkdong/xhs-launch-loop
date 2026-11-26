@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+dist/
+# 在仓库里试跑脚本时产生的数据
+/xhs_launch/
